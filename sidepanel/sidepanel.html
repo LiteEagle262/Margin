@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ScrapeFlow - Chat Assistant</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Drawer Backdrop Overlay -->
+    <div id="drawer-backdrop" class="drawer-backdrop hidden"></div>
+
+    <!-- Left History Drawer -->
+    <aside id="history-drawer" class="history-drawer">
+      <div class="drawer-header">
+        <span class="drawer-title">Chat History</span>
+        <button id="new-chat-btn" class="new-chat-btn">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          <span>New Chat</span>
+        </button>
+      </div>
+      <div id="history-list" class="history-list">
+        <!-- Chat sessions will populate here dynamically -->
+      </div>
+    </aside>
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <!-- Hamburger Menu toggle button -->
+        <button id="hamburger-menu-btn" class="header-icon-btn" title="Open Chat History">
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+        <span class="logo-text">ScrapeFlow</span>
+      </div>
+      
+      <div class="header-right">
+        <!-- Latch to Tab Button -->
+        <button id="latch-tab-btn" class="header-icon-btn latch-tab-btn" title="Latch extension to current tab">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="5" r="3"/>
+            <line x1="12" y1="22" x2="12" y2="8"/>
+            <path d="M5 12H2a10 10 0 0 0 20 0h-3"/>
+          </svg>
+        </button>
+
+        <!-- New Chat Button -->
+        <button id="header-new-chat-btn" class="header-icon-btn" title="New Chat">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
+        
+        <!-- Clear Chat Button -->
+        <button id="header-clear-chat-btn" class="header-icon-btn" title="Clear Current Chat">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+        </button>
+
+        <span id="active-model-badge" class="badge">No Key Configured</span>
+        <!-- Settings Toggle Icon Button -->
+        <button id="toggle-settings-btn" class="header-icon-btn" title="Open Settings">
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Latched Tab Status Bar -->
+    <div id="latched-tab-bar" class="latched-tab-bar hidden" role="status" aria-live="polite">
+      <span class="latched-tab-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="5" r="3"/>
+          <line x1="12" y1="22" x2="12" y2="8"/>
+          <path d="M5 12H2a10 10 0 0 0 20 0h-3"/>
+        </svg>
+      </span>
+      <span class="latched-tab-label">Latched:</span>
+      <span class="latched-tab-text" id="latched-tab-text">—</span>
+      <button id="focus-latched-tab-btn" class="latched-tab-action" title="Focus latched tab" aria-label="Focus latched tab">
+        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+        </svg>
+      </button>
+      <button id="unlatch-tab-btn" class="latched-tab-action latched-tab-close" title="Unlatch" aria-label="Unlatch tab">
+        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Main Content Area -->
+    <main class="app-content">
+      <!-- 1. CHAT VIEW -->
+      <section id="chat-view" class="view-panel active">
+        <div id="chat-history" class="chat-history">
+          <div class="message system-msg">
+            <div class="message-content">
+              <p><strong>ScrapeFlow is ready.</strong></p>
+              <p>Add your OpenRouter key in settings, then ask for scraper scripts, page inspection, or browser actions.</p>
+              <p>Files appear as cards you can open and copy. Browser tool calls collapse into a single "Activity" trace — click to expand.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- File Viewer Overlay -->
+        <div id="file-viewer-overlay" class="file-viewer-overlay hidden" role="dialog" aria-hidden="true" aria-modal="true">
+          <div class="file-viewer-panel">
+            <div class="file-viewer-header">
+              <div class="file-viewer-info">
+                <span class="file-viewer-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                </span>
+                <div class="file-viewer-text">
+                  <span class="file-viewer-name"></span>
+                  <span class="file-viewer-meta"></span>
+                </div>
+              </div>
+              <div class="file-viewer-actions">
+                <button type="button" class="file-viewer-copy text-btn">Copy</button>
+                <button type="button" class="file-viewer-close" aria-label="Close file preview">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <pre class="file-viewer-code"><code></code></pre>
+          </div>
+        </div>
+
+        <!-- Screenshots preview section -->
+        <div id="screenshots-preview-area" class="screenshots-preview-area hidden">
+          <!-- Image thumbnails go here -->
+        </div>
+
+        <!-- Chat Input Bar -->
+        <div class="chat-input-container">
+          <!-- Workspace Strip: persistent file index above the textbox -->
+          <div id="workspace-strip" class="workspace-strip hidden">
+            <div class="workspace-strip-header">
+              <span class="workspace-strip-title">
+                <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span>Workspace</span>
+                <span class="workspace-count">0 files</span>
+              </span>
+            </div>
+            <div class="workspace-strip-chips" id="workspace-strip-chips"></div>
+          </div>
+
+          <div class="input-row">
+            <!-- Screenshot upload button -->
+            <button id="attach-screenshot-btn" class="attach-btn" title="Upload Screenshot(s)">
+              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+              </svg>
+            </button>
+            <input type="file" id="screenshot-input" accept="image/*" multiple class="hidden">
+            
+            <textarea id="chat-textarea" placeholder="Ask a question or request a scraper script..." rows="1"></textarea>
+            
+            <button id="send-btn" class="send-btn" disabled title="Send" aria-label="Send message">
+              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none">
+                <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Usage Bar: context ring + cost. Hover ring for breakdown. -->
+          <div class="usage-bar">
+            <button type="button" id="context-ring-btn" class="context-ring-btn" aria-label="Context usage breakdown" aria-describedby="context-tooltip">
+              <svg class="context-ring" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" class="ring-track"/>
+                <circle cx="12" cy="12" r="9" class="ring-progress" pathLength="100"/>
+              </svg>
+              <span class="context-percent">0%</span>
+              <span class="context-summary">— of — ctx</span>
+            </button>
+            <div id="context-tooltip" class="context-tooltip" role="tooltip" aria-hidden="true">
+              <div class="tooltip-header">
+                <span class="tooltip-title">Next request</span>
+                <span class="tooltip-total">— tokens</span>
+              </div>
+              <div class="tooltip-bar" aria-hidden="true"></div>
+              <ul class="tooltip-breakdown"></ul>
+              <div class="tooltip-footer">
+                <span class="tooltip-model">—</span>
+                <span class="tooltip-window">— ctx</span>
+              </div>
+            </div>
+            <div class="usage-divider" aria-hidden="true"></div>
+            <span id="cost-meter" class="cost-meter" title="Total spend this chat">
+              <span class="cost-icon" aria-hidden="true">$</span>
+              <span class="cost-amount">0.0000</span>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. SETTINGS VIEW -->
+      <section id="settings-view" class="view-panel">
+        <div class="panel-back-header">
+          <button id="back-to-chat-btn" class="back-link-btn">
+            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+            </svg>
+            <span>Back to Chat</span>
+          </button>
+          <h3>Settings</h3>
+        </div>
+        
+        <form id="settings-form" class="settings-form">
+          <div class="form-group">
+            <label for="openrouter-api-key">OpenRouter API Key</label>
+            <div class="api-key-input-container">
+              <input type="password" id="openrouter-api-key" placeholder="sk-or-v1-..." autocomplete="off">
+              <button type="button" id="toggle-key-visibility" class="icon-toggle-btn" title="Show key" aria-label="Show API key">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+            </div>
+            <span class="help-text">Get a key from <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a>. Stored locally on your browser.</span>
+          </div>
+
+          <div class="form-group">
+            <label for="model-search">Active AI Model</label>
+            <div class="model-picker" id="model-picker">
+              <input type="text" id="model-search" placeholder="Search OpenRouter models..." autocomplete="off" spellcheck="false">
+              <input type="hidden" id="model-selected" value="">
+              <button type="button" id="refresh-models-btn" class="icon-toggle-btn model-refresh-btn" title="Refresh model list" aria-label="Refresh model list">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+              </button>
+              <div id="model-dropdown" class="model-dropdown hidden" role="listbox"></div>
+            </div>
+            <span class="help-text" id="model-picker-status">Save your API key, then search and pick any OpenRouter model.</span>
+          </div>
+
+          <div class="form-group mcp-bridge-section">
+            <div class="form-group-header">
+              <label>MCP Server Connector</label>
+              <span id="mcp-bridge-status-badge" class="mcp-bridge-badge">Offline</span>
+            </div>
+            <label class="mcp-bridge-toggle">
+              <input type="checkbox" id="mcp-bridge-enabled">
+              Enable MCP Server Mode (expose browser tools to Claude Code, Codex, Cursor, etc.)
+            </label>
+            <div class="mcp-bridge-grid">
+              <div>
+                <label for="mcp-bridge-port">Bridge port</label>
+                <input type="number" id="mcp-bridge-port" min="1024" max="65535" value="9229">
+              </div>
+              <div>
+                <label for="mcp-bridge-token">Auth token</label>
+                <div class="mcp-bridge-token-row">
+                  <input type="text" id="mcp-bridge-token" readonly>
+                  <button type="button" id="copy-mcp-bridge-token-btn" class="text-btn">Copy</button>
+                  <button type="button" id="regenerate-mcp-bridge-token-btn" class="text-btn">New</button>
+                </div>
+              </div>
+            </div>
+            <details class="mcp-bridge-setup">
+              <summary>Claude Code / Cursor setup</summary>
+              <pre id="mcp-bridge-config-snippet" class="mcp-bridge-snippet"></pre>
+              <button type="button" id="copy-mcp-bridge-config-btn" class="text-btn">Copy MCP config</button>
+            </details>
+            <span class="help-text">Run <code>npm install</code> in <code>mcp-server/</code>, then add the config above to your MCP client. Keep Chrome open with an active tab for autonomous testing.</span>
+          </div>
+
+          <div class="form-group mcp-bridge-section">
+            <div class="form-group-header">
+              <label>Temp Email Backend (optional)</label>
+              <span id="temp-email-status-badge" class="mcp-bridge-badge">Off</span>
+            </div>
+            <label class="mcp-bridge-toggle">
+              <input type="checkbox" id="temp-email-enabled">
+              Expose disposable-inbox tools (create_temp_email, wait_for_email, ...) to MCP clients
+            </label>
+            <div class="mcp-bridge-grid">
+              <div>
+                <label for="temp-email-api-url">Mail server URL</label>
+                <input type="text" id="temp-email-api-url" placeholder="https://mail.example.com">
+              </div>
+              <div>
+                <label for="temp-email-api-key">API key</label>
+                <input type="password" id="temp-email-api-key" placeholder="paste API_KEY from mail-server .env" autocomplete="off">
+              </div>
+            </div>
+            <span class="help-text">Off by default. Requires the <code>mail-server/</code> backend running and reachable. The toggle gates whether the AI sees these tools at all — disable it to lock the AI out of the inbox API.</span>
+          </div>
+
+          <div class="form-group">
+            <div class="form-group-header">
+              <label>MCP Client Servers</label>
+              <button type="button" id="add-mcp-server-btn" class="text-btn">+ Add Server</button>
+            </div>
+            <div id="mcp-servers-list" class="mcp-servers-list"></div>
+            <span class="help-text">Connect external HTTP MCP servers into ScrapeFlow chat. Use streamable-http URLs (e.g. <code>https://openrouter.ai/_mcp/server</code>).</span>
+          </div>
+
+          <div class="form-group">
+            <label for="system-prompt">System Instructions</label>
+            <textarea id="system-prompt" rows="8">You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
+You can execute actions on the current webpage using your built-in tools (get_dom, take_screenshot, click_element, scroll_page, type_text, run_js, get_active_tab, list_tabs, navigate). Use them to inspect, analyze, and build web scrapers on behalf of the user.
+For debugging API calls and page requests, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, and response bodies.
+If MCP servers are configured, you also have additional tools prefixed with mcp__ — use those when they are relevant.
+
+IMPORTANT — File output rules:
+- NEVER paste full scripts or multi-line code in chat markdown/code blocks.
+- ALWAYS use write_file to save scripts, configs, and other files. The user gets a compact file card they can click to view and copy.
+- Files are saved to a persistent workspace shared across chats. Use list_files for an overview, search_files to find files by name or content, get_file_info for metadata, read_file to load contents, rename_file and delete_file to manage files.
+- After write_file, give a brief explanation only — do not repeat the file contents.</textarea>
+          </div>
+
+          <div class="settings-actions">
+            <button type="submit" id="save-settings-btn" class="primary-btn">Save Settings</button>
+            <button type="button" id="reset-data-btn" class="danger-btn">Clear All Data</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <!-- Notification Banner -->
+  <div id="toast" class="toast hidden">Settings Saved</div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
