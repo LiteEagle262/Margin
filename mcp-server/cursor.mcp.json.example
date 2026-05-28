@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "scrapeflow": {
+      "command": "node",
+      "args": ["ABSOLUTE_PATH_TO_EXTENSION/mcp-server/index.js"],
+      "env": {
+        "SCRAPEFLOW_MCP_PORT": "9229",
+        "SCRAPEFLOW_MCP_TOKEN": "paste-token-from-extension-settings",
+        "SCRAPEFLOW_MAIL_API_URL": "https://mail.example.com",
+        "SCRAPEFLOW_MAIL_API_KEY": "paste-api-key-from-mail-server-env"
+      }
+    }
+  }
+}

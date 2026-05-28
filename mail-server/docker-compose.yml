@@ -1,0 +1,10 @@
+services:
+  mail-server:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+      - "25:25"
+    volumes:
+      - ./data:/app/data
