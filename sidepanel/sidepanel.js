@@ -638,9 +638,8 @@ function computeContextBreakdown() {
 
   const activeChat = chats[currentChatId];
   if (activeChat && Array.isArray(activeChat.messages)) {
-    // Mirror what runAgentCycle sends: the last 25 entries.
-    const slice = activeChat.messages.slice(-25);
-    slice.forEach(msg => {
+    // Mirror what runAgentCycle sends: the full stored conversation.
+    activeChat.messages.forEach(msg => {
       if (msg.role === "user") {
         breakdown.chat += approxTokens(msg.content || "");
         if (Array.isArray(msg.images)) breakdown.images += msg.images.length * 1024;
@@ -3259,8 +3258,8 @@ async function runAgentCycle() {
       { role: "system", content: getEffectiveSystemPrompt() }
     ];
 
-    // Gather last 25 turns for conversation context, formatting Vision and Tool logs
-    activeChat.messages.slice(-25).forEach(msg => {
+    // Gather the full stored conversation context, formatting Vision and Tool logs.
+    activeChat.messages.forEach(msg => {
       if (msg.role === "user") {
         const contents = [];
         contents.push({ type: "text", text: msg.content || "Analyze page elements." });
