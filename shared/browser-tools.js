@@ -139,6 +139,105 @@ async function runJsViaDebugger(code) {
   });
 }
 
+function normalizeAuthenticatorDomain(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return url.hostname.replace(/^www\./, "");
+  } catch {
+    return raw
+      .replace(/^https?:\/\//, "")
+      .split("/")[0]
+      .split(":")[0]
+      .replace(/^www\./, "")
+      .trim();
+  }
+}
+
+function normalizeAuthenticatorSecret(value) {
+  return String(value || "")
+    .replace(/^otpauth:\/\/totp\/[^?]+\?/i, "")
+    .replace(/.*(?:^|[?&])secret=([^&]+).*/i, "$1")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+}
+
+function decodeBase32(secret) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const clean = normalizeAuthenticatorSecret(secret).replace(/=+$/g, "");
+  let bits = "";
+  const bytes = [];
+
+  for (const char of clean) {
+    const value = alphabet.indexOf(char);
+    if (value === -1) {
+      throw new Error("Manual key is not valid base32.");
+    }
+    bits += value.toString(2).padStart(5, "0");
+    while (bits.length >= 8) {
+      bytes.push(parseInt(bits.slice(0, 8), 2));
+      bits = bits.slice(8);
+    }
+  }
+
+  if (bytes.length === 0) throw new Error("Manual key is empty.");
+  return new Uint8Array(bytes);
+}
+
+async function generateTotp(secret, now = Date.now()) {
+  const period = 30;
+  const digits = 6;
+  const counter = Math.floor(now / 1000 / period);
+  const keyBytes = decodeBase32(secret);
+  const counterBytes = new ArrayBuffer(8);
+  const view = new DataView(counterBytes);
+  view.setUint32(4, counter, false);
+
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, counterBytes));
+  const offset = digest[digest.length - 1] & 0x0f;
+  const binary =
+    ((digest[offset] & 0x7f) << 24) |
+    ((digest[offset + 1] & 0xff) << 16) |
+    ((digest[offset + 2] & 0xff) << 8) |
+    (digest[offset + 3] & 0xff);
+  const code = String(binary % (10 ** digits)).padStart(digits, "0");
+  const secondsRemaining = period - (Math.floor(now / 1000) % period);
+  return { code, period, digits, secondsRemaining };
+}
+
+async function getAuthenticatorKeyMap() {
+  const stored = await chrome.storage.local.get(["authManualKeys"]);
+  const raw = stored.authManualKeys && typeof stored.authManualKeys === "object" ? stored.authManualKeys : {};
+  return Object.entries(raw).reduce((acc, [domain, key]) => {
+    const normalizedDomain = normalizeAuthenticatorDomain(domain);
+    const normalizedKey = normalizeAuthenticatorSecret(key);
+    if (normalizedDomain && normalizedKey) acc[normalizedDomain] = normalizedKey;
+    return acc;
+  }, {});
+}
+
+function findAuthenticatorKeyForDomain(keys, domain) {
+  if (keys[domain]) return { domain, manualKey: keys[domain] };
+  const match = Object.keys(keys)
+    .filter((savedDomain) => domain === savedDomain || domain.endsWith(`.${savedDomain}`))
+    .sort((a, b) => b.length - a.length)[0];
+  return match ? { domain: match, manualKey: keys[match] } : null;
+}
+
+async function getCurrentAuthenticatorDomain(args = {}) {
+  if (args.domain) return normalizeAuthenticatorDomain(args.domain);
+  const tab = await getActiveTabInfo();
+  return normalizeAuthenticatorDomain(tab?.url || "");
+}
+
 // Capture a screenshot of an arbitrary tab (even when not the foreground tab)
 // via the debugger. captureVisibleTab cannot reach background tabs.
 async function captureTabViaDebugger(tabId) {
@@ -277,6 +376,33 @@ ${domResult.outerHtml}`;
       case "clear_network_logs": {
         const tabId = await getActiveTabId();
         return await executeNetworkTool(name, args, tabId);
+      }
+
+      case "list_authenticator_domains": {
+        const keys = await getAuthenticatorKeyMap();
+        return JSON.stringify({
+          domains: Object.keys(keys).sort(),
+          count: Object.keys(keys).length
+        }, null, 2);
+      }
+
+      case "get_authenticator_code": {
+        const domain = await getCurrentAuthenticatorDomain(args);
+        if (!domain) return "Error: No domain supplied and no active website domain is available.";
+        const keys = await getAuthenticatorKeyMap();
+        const match = findAuthenticatorKeyForDomain(keys, domain);
+        if (!match) {
+          return `Error: No authenticator manual key saved for "${domain}". Add it in ScrapeFlow settings first.`;
+        }
+        const token = await generateTotp(match.manualKey);
+        return JSON.stringify({
+          domain,
+          matched_domain: match.domain,
+          code: token.code,
+          seconds_remaining: token.secondsRemaining,
+          period: token.period,
+          digits: token.digits
+        }, null, 2);
       }
 
       default:
