@@ -254,6 +254,35 @@
             <span class="help-text" id="model-picker-status">Save your API key, then search and pick any OpenRouter model.</span>
           </div>
 
+          <div class="form-group provider-routing-section">
+            <div class="form-group-header">
+              <label>OpenRouter Provider Routing</label>
+              <button type="button" id="refresh-providers-btn" class="text-btn">Refresh Providers</button>
+            </div>
+            <label class="mcp-bridge-toggle">
+              <input type="checkbox" id="provider-routing-enabled">
+              Pin or rank inference providers for the active model
+            </label>
+            <div class="provider-routing-controls">
+              <div>
+                <label for="provider-routing-mode">Routing mode</label>
+                <select id="provider-routing-mode">
+                  <option value="auto">OpenRouter auto</option>
+                  <option value="ordered">Use selected providers</option>
+                  <option value="price">Lowest price</option>
+                  <option value="throughput">Highest throughput</option>
+                  <option value="latency">Lowest latency</option>
+                </select>
+              </div>
+              <label class="provider-fallback-toggle">
+                <input type="checkbox" id="provider-allow-fallbacks">
+                Allow fallbacks
+              </label>
+            </div>
+            <div id="provider-comparison" class="provider-comparison"></div>
+            <span class="help-text" id="provider-routing-status">Select a model, then refresh providers to compare OpenRouter endpoints.</span>
+          </div>
+
           <div class="form-group mcp-bridge-section">
             <div class="form-group-header">
               <label>MCP Server Connector</label>
