@@ -16,11 +16,19 @@ let settings = {
     apiUrl: "",
     apiKey: ""
   },
+  providerRouting: {
+    enabled: false,
+    mode: "auto",
+    order: [],
+    allowFallbacks: true
+  },
   authManualKeys: {}
 };
 
 let openRouterModels = [];
 let openRouterModelsLoading = false;
+let openRouterEndpoints = [];
+let openRouterEndpointsLoading = false;
 let mcpToolRegistry = new Map(); // toolName -> { serverId, serverName, originalName }
 
 let chats = {};            // Dictionary of chat sessions: { [chatId]: { id, title, messages: [], timestamp } }
@@ -395,6 +403,7 @@ async function init() {
     initHistoryDrawer();
     initSettingsToggle();
     initModelPicker();
+    initProviderRoutingSettings();
     initMcpSettings();
     initMcpBridgeSettings();
     initAuthManualKeySettings();
@@ -415,7 +424,7 @@ async function init() {
 // ----------------------------------------------------
 async function loadSettings() {
   try {
-    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "authManualKeys"]);
+    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "providerRouting", "authManualKeys"]);
     settings.apiKey = result.apiKey || "";
     settings.model = result.model || "anthropic/claude-3.5-sonnet";
     if (settings.model === "custom" && result.customModel) {
@@ -425,6 +434,7 @@ async function loadSettings() {
     settings.mcpServers = Array.isArray(result.mcpServers) ? result.mcpServers : [];
     settings.mcpBridge = normalizeMcpBridgeSettings(result.mcpBridge);
     settings.tempEmail = normalizeTempEmailSettings(result.tempEmail);
+    settings.providerRouting = normalizeProviderRoutingSettings(result.providerRouting);
     settings.authManualKeys = normalizeAuthManualKeys(result.authManualKeys);
 
     const apiKeyInput = document.getElementById("openrouter-api-key");
@@ -434,6 +444,7 @@ async function loadSettings() {
     renderMcpServersList();
     renderMcpBridgeSettings();
     renderTempEmailSettings();
+    renderProviderRoutingSettings();
     renderAuthManualKeys();
 
     const systemPromptTextarea = document.getElementById("system-prompt");
@@ -1043,6 +1054,7 @@ if (settingsForm) {
       settings.mcpServers = collectMcpServersFromUI();
       settings.mcpBridge = collectMcpBridgeFromUI();
       settings.tempEmail = collectTempEmailFromUI();
+      settings.providerRouting = collectProviderRoutingFromUI();
       settings.authManualKeys = collectAuthManualKeysFromUI();
 
       await chrome.storage.local.set({
@@ -1052,6 +1064,7 @@ if (settingsForm) {
         mcpServers: settings.mcpServers,
         mcpBridge: settings.mcpBridge,
         tempEmail: settings.tempEmail,
+        providerRouting: settings.providerRouting,
         authManualKeys: settings.authManualKeys
       });
       await refreshMcpTools();
@@ -1347,6 +1360,9 @@ function selectModel(model) {
   if (modelSelected) modelSelected.value = model.id;
   if (modelSearch) modelSearch.value = model.name || model.id;
   if (dropdown) dropdown.classList.add("hidden");
+  openRouterEndpoints = [];
+  settings.providerRouting.order = [];
+  renderProviderRoutingSettings();
 }
 
 function initModelPicker() {
@@ -1422,6 +1438,265 @@ function initModelPicker() {
       openRouterModels = [];
     });
   }
+}
+
+// ----------------------------------------------------
+// OPENROUTER PROVIDER ROUTING
+// ----------------------------------------------------
+const PROVIDER_ROUTING_MODES = new Set(["auto", "ordered", "price", "throughput", "latency"]);
+
+function normalizeProviderSlug(value) {
+  return String(value || "").trim();
+}
+
+function endpointSlug(endpoint) {
+  return normalizeProviderSlug(endpoint?.tag || endpoint?.provider_slug || endpoint?.provider || endpoint?.name || endpoint?.provider_name);
+}
+
+function normalizeProviderRoutingSettings(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  const mode = PROVIDER_ROUTING_MODES.has(value.mode) ? value.mode : "auto";
+  const order = Array.isArray(value.order)
+    ? value.order.map(normalizeProviderSlug).filter(Boolean)
+    : [];
+
+  return {
+    enabled: value.enabled === true,
+    mode,
+    order,
+    allowFallbacks: value.allowFallbacks !== false
+  };
+}
+
+function collectProviderRoutingFromUI() {
+  const enabledInput = document.getElementById("provider-routing-enabled");
+  const modeInput = document.getElementById("provider-routing-mode");
+  const fallbackInput = document.getElementById("provider-allow-fallbacks");
+  const providerInputs = Array.from(document.querySelectorAll(".provider-select-input"));
+  const selected = Array.from(document.querySelectorAll(".provider-select-input:checked"))
+    .map(input => normalizeProviderSlug(input.value))
+    .filter(Boolean);
+
+  return normalizeProviderRoutingSettings({
+    enabled: enabledInput ? enabledInput.checked : settings.providerRouting.enabled,
+    mode: modeInput ? modeInput.value : settings.providerRouting.mode,
+    order: providerInputs.length ? selected : settings.providerRouting.order,
+    allowFallbacks: fallbackInput ? fallbackInput.checked : settings.providerRouting.allowFallbacks
+  });
+}
+
+function buildProviderPreferences() {
+  const routing = normalizeProviderRoutingSettings(settings.providerRouting);
+  if (!routing.enabled || routing.mode === "auto") return null;
+
+  const provider = {};
+  if (routing.mode === "ordered") {
+    if (routing.order.length === 0) return null;
+    provider.order = routing.order;
+    provider.allow_fallbacks = routing.allowFallbacks;
+  } else {
+    provider.sort = routing.mode;
+  }
+
+  return provider;
+}
+
+function selectedModelIdFromUI() {
+  const picked = document.getElementById("model-selected")?.value.trim();
+  const typed = document.getElementById("model-search")?.value.trim();
+  if (picked) return picked;
+  const typedMatch = openRouterModels.find(model => model.id === typed || model.name === typed);
+  return typedMatch?.id || settings.model || typed || "";
+}
+
+function modelEndpointsUrl(modelId) {
+  const parts = String(modelId || "").split("/").filter(Boolean);
+  if (parts.length < 2) return "";
+  const author = encodeURIComponent(parts.shift());
+  const slug = parts.map(encodeURIComponent).join("/");
+  return `https://openrouter.ai/api/v1/models/${author}/${slug}/endpoints`;
+}
+
+function setProviderRoutingStatus(message, isError = false) {
+  const statusEl = document.getElementById("provider-routing-status");
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  statusEl.style.color = isError ? "var(--danger)" : "";
+}
+
+function formatEndpointPrice(pricing) {
+  if (!pricing) return "n/a";
+  const prompt = Number(pricing.prompt);
+  const completion = Number(pricing.completion);
+  const inPrice = Number.isFinite(prompt) ? `$${(prompt * 1_000_000).toFixed(2)} in` : "";
+  const outPrice = Number.isFinite(completion) ? `$${(completion * 1_000_000).toFixed(2)} out` : "";
+  return [inPrice, outPrice].filter(Boolean).join(" / ") || "n/a";
+}
+
+function formatPercent(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(number >= 99 ? 1 : 0)}%` : "n/a";
+}
+
+function formatLatency(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(number < 10 ? 2 : 1)}s` : "n/a";
+}
+
+function formatThroughput(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(1)} tok/s` : "n/a";
+}
+
+function endpointFeatureSummary(endpoint) {
+  const parts = [
+    endpoint.quantization || "",
+    endpoint.context_length ? `${Math.round(Number(endpoint.context_length) / 1000)}k ctx` : "",
+    endpoint.max_completion_tokens ? `${Math.round(Number(endpoint.max_completion_tokens) / 1000)}k max out` : "",
+    endpoint.supports_implicit_caching ? "cache" : "",
+    Array.isArray(endpoint.supported_parameters) && endpoint.supported_parameters.includes("tools") ? "tools" : ""
+  ].filter(Boolean);
+  return parts.join(" / ") || "standard";
+}
+
+function renderProviderRoutingSettings() {
+  const enabledInput = document.getElementById("provider-routing-enabled");
+  const modeInput = document.getElementById("provider-routing-mode");
+  const fallbackInput = document.getElementById("provider-allow-fallbacks");
+  const comparison = document.getElementById("provider-comparison");
+  if (!comparison) return;
+
+  const routing = normalizeProviderRoutingSettings(settings.providerRouting);
+  if (enabledInput) enabledInput.checked = routing.enabled;
+  if (modeInput) modeInput.value = routing.mode;
+  if (fallbackInput) fallbackInput.checked = routing.allowFallbacks;
+  comparison.innerHTML = "";
+
+  if (openRouterEndpointsLoading) {
+    comparison.innerHTML = `<div class="provider-empty">Loading provider endpoints...</div>`;
+    return;
+  }
+
+  if (openRouterEndpoints.length === 0) {
+    comparison.innerHTML = `<div class="provider-empty">No provider data loaded for this model yet.</div>`;
+    return;
+  }
+
+  const selected = new Set(routing.order);
+  const table = document.createElement("div");
+  table.className = "provider-table";
+  table.innerHTML = `
+    <div class="provider-row provider-row-head">
+      <span>Use</span>
+      <span>Provider</span>
+      <span>Price</span>
+      <span>Latency</span>
+      <span>Throughput</span>
+      <span>Uptime</span>
+      <span>Features</span>
+    </div>
+  `;
+
+  openRouterEndpoints.forEach((endpoint) => {
+    const slug = endpointSlug(endpoint);
+    const row = document.createElement("label");
+    row.className = "provider-row provider-row-body";
+    const isSelected = selected.has(slug);
+    if (isSelected) row.classList.add("selected");
+
+    row.innerHTML = `
+      <span><input type="checkbox" class="provider-select-input" value="${escapeHtml(slug)}" ${isSelected ? "checked" : ""}></span>
+      <span>
+        <strong>${escapeHtml(endpoint.provider_name || endpoint.name || slug || "Unknown")}</strong>
+        <small>${escapeHtml(slug || "no slug")}</small>
+      </span>
+      <span>${escapeHtml(formatEndpointPrice(endpoint.pricing))}</span>
+      <span>${escapeHtml(formatLatency(endpoint.latency_last_30m?.p50))}</span>
+      <span>${escapeHtml(formatThroughput(endpoint.throughput_last_30m?.p50))}</span>
+      <span>${escapeHtml(formatPercent(endpoint.uptime_last_30m ?? endpoint.uptime_last_1d))}</span>
+      <span>${escapeHtml(endpointFeatureSummary(endpoint))}</span>
+    `;
+
+    row.querySelector(".provider-select-input")?.addEventListener("change", () => {
+      settings.providerRouting = collectProviderRoutingFromUI();
+      renderProviderRoutingSettings();
+    });
+    table.appendChild(row);
+  });
+
+  comparison.appendChild(table);
+}
+
+async function fetchOpenRouterEndpoints() {
+  const apiKeyInput = document.getElementById("openrouter-api-key");
+  const apiKey = apiKeyInput ? apiKeyInput.value.trim() : settings.apiKey;
+  const modelId = selectedModelIdFromUI();
+  const url = modelEndpointsUrl(modelId);
+
+  if (!apiKey) {
+    setProviderRoutingStatus("Add your OpenRouter API key above to load provider endpoints.", true);
+    return [];
+  }
+  if (!url) {
+    setProviderRoutingStatus("Pick an OpenRouter model before loading providers.", true);
+    return [];
+  }
+
+  openRouterEndpointsLoading = true;
+  renderProviderRoutingSettings();
+  setProviderRoutingStatus("Loading provider endpoints from OpenRouter...");
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://github.com/scrapeflow",
+        "X-Title": "ScrapeFlow Chat"
+      }
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to load providers (${response.status}): ${errText}`);
+    }
+
+    const data = await response.json();
+    openRouterEndpoints = (data.data?.endpoints || [])
+      .filter(endpoint => endpointSlug(endpoint))
+      .sort((a, b) => (a.provider_name || a.name || endpointSlug(a)).localeCompare(b.provider_name || b.name || endpointSlug(b)));
+    settings.providerRouting.order = settings.providerRouting.order.filter(slug =>
+      openRouterEndpoints.some(endpoint => endpointSlug(endpoint) === slug)
+    );
+    setProviderRoutingStatus(`${openRouterEndpoints.length} providers loaded for ${modelId}.`);
+    return openRouterEndpoints;
+  } catch (err) {
+    console.error("Provider endpoint fetch error:", err);
+    setProviderRoutingStatus(err.message, true);
+    return [];
+  } finally {
+    openRouterEndpointsLoading = false;
+    renderProviderRoutingSettings();
+  }
+}
+
+function initProviderRoutingSettings() {
+  const enabledInput = document.getElementById("provider-routing-enabled");
+  const modeInput = document.getElementById("provider-routing-mode");
+  const fallbackInput = document.getElementById("provider-allow-fallbacks");
+  const refreshBtn = document.getElementById("refresh-providers-btn");
+
+  [enabledInput, modeInput, fallbackInput].forEach(el => {
+    el?.addEventListener("change", () => {
+      settings.providerRouting = collectProviderRoutingFromUI();
+      renderProviderRoutingSettings();
+    });
+  });
+
+  refreshBtn?.addEventListener("click", async () => {
+    await fetchOpenRouterEndpoints();
+  });
+
+  renderProviderRoutingSettings();
 }
 
 // ----------------------------------------------------
@@ -3018,6 +3293,19 @@ async function runAgentCycle() {
       }
     });
 
+    const providerPreferences = buildProviderPreferences();
+    const requestBody = {
+      model: activeModel,
+      messages: apiMessages,
+      tools: getAllAgentTools(),
+      temperature: 0.2,
+      // Request token + cost accounting on every completion.
+      usage: { include: true }
+    };
+    if (providerPreferences) {
+      requestBody.provider = providerPreferences;
+    }
+
     // 3. OpenRouter fetch request
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -3027,14 +3315,7 @@ async function runAgentCycle() {
         "HTTP-Referer": "https://github.com/scrapeflow",
         "X-Title": "ScrapeFlow Chat"
       },
-      body: JSON.stringify({
-        model: activeModel,
-        messages: apiMessages,
-        tools: getAllAgentTools(),
-        temperature: 0.2,
-        // Request token + cost accounting on every completion.
-        usage: { include: true }
-      }),
+      body: JSON.stringify(requestBody),
       signal: agentAbortController?.signal
     });
 
