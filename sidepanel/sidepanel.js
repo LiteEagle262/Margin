@@ -15,7 +15,8 @@ let settings = {
     enabled: false,
     apiUrl: "",
     apiKey: ""
-  }
+  },
+  authManualKeys: {}
 };
 
 let openRouterModels = [];
@@ -31,7 +32,8 @@ let agentStopRequested = false;
 let agentAbortController = null;
 
 const DEFAULT_SYSTEM_PROMPT = `You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
-You can execute actions on the current webpage using your built-in tools (get_dom, take_screenshot, click_element, scroll_page, type_text, run_js, get_active_tab, list_tabs, navigate). Use them to inspect, analyze, and build web scrapers on behalf of the user.
+You can execute actions on the current webpage using your built-in tools (get_dom, take_screenshot, click_element, scroll_page, type_text, run_js, get_active_tab, list_tabs, navigate, get_authenticator_code, list_authenticator_domains). Use them to inspect, analyze, and build web scrapers on behalf of the user.
+If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.
 For debugging API calls and page requests, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, and response bodies.
 If MCP servers are configured, you also have additional tools prefixed with mcp__ — use those when they are relevant.
 
@@ -40,6 +42,9 @@ IMPORTANT — File output rules:
 - ALWAYS use write_file to save scripts, configs, and other files. The user gets a compact file card they can click to view and copy.
 - Files are saved to a persistent workspace shared across chats. Use list_files for an overview, search_files to find files by name or content, get_file_info for metadata, read_file to load contents, rename_file and delete_file to manage files.
 - After write_file, give a brief explanation only — do not repeat the file contents.`;
+
+const AUTHENTICATOR_SYSTEM_PROMPT_ADDENDUM =
+  "If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.";
 
 const EYE_ICON = `
   <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -228,6 +233,27 @@ const BROWSER_TOOLS = [
       description: "Clear all captured network logs for the active tab.",
       parameters: { type: "object", properties: {} }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_authenticator_code",
+      description: "Generate a current 6-digit TOTP authenticator code from a saved manual key for a domain. If domain is omitted, uses the active tab hostname.",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Optional hostname or URL. Defaults to the current active tab hostname." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_authenticator_domains",
+      description: "List domains that have saved authenticator manual keys. Does not reveal the keys.",
+      parameters: { type: "object", properties: {} }
+    }
   }
 ];
 
@@ -371,6 +397,7 @@ async function init() {
     initModelPicker();
     initMcpSettings();
     initMcpBridgeSettings();
+    initAuthManualKeySettings();
     initChatEvents();
     initUploadEvents();
     initFileViewer();
@@ -388,7 +415,7 @@ async function init() {
 // ----------------------------------------------------
 async function loadSettings() {
   try {
-    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail"]);
+    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "authManualKeys"]);
     settings.apiKey = result.apiKey || "";
     settings.model = result.model || "anthropic/claude-3.5-sonnet";
     if (settings.model === "custom" && result.customModel) {
@@ -398,6 +425,7 @@ async function loadSettings() {
     settings.mcpServers = Array.isArray(result.mcpServers) ? result.mcpServers : [];
     settings.mcpBridge = normalizeMcpBridgeSettings(result.mcpBridge);
     settings.tempEmail = normalizeTempEmailSettings(result.tempEmail);
+    settings.authManualKeys = normalizeAuthManualKeys(result.authManualKeys);
 
     const apiKeyInput = document.getElementById("openrouter-api-key");
     if (apiKeyInput) apiKeyInput.value = settings.apiKey;
@@ -406,6 +434,7 @@ async function loadSettings() {
     renderMcpServersList();
     renderMcpBridgeSettings();
     renderTempEmailSettings();
+    renderAuthManualKeys();
 
     const systemPromptTextarea = document.getElementById("system-prompt");
     if (systemPromptTextarea) systemPromptTextarea.value = settings.systemPrompt;
@@ -1014,6 +1043,7 @@ if (settingsForm) {
       settings.mcpServers = collectMcpServersFromUI();
       settings.mcpBridge = collectMcpBridgeFromUI();
       settings.tempEmail = collectTempEmailFromUI();
+      settings.authManualKeys = collectAuthManualKeysFromUI();
 
       await chrome.storage.local.set({
         apiKey: settings.apiKey,
@@ -1021,7 +1051,8 @@ if (settingsForm) {
         systemPrompt: settings.systemPrompt,
         mcpServers: settings.mcpServers,
         mcpBridge: settings.mcpBridge,
-        tempEmail: settings.tempEmail
+        tempEmail: settings.tempEmail,
+        authManualKeys: settings.authManualKeys
       });
       await refreshMcpTools();
       chrome.runtime.sendMessage({ type: "mcp-bridge/reconnect" });
@@ -1593,6 +1624,142 @@ function collectTempEmailFromUI() {
     enabled: enabledInput ? enabledInput.checked : settings.tempEmail.enabled,
     apiUrl: urlInput ? urlInput.value : settings.tempEmail.apiUrl,
     apiKey: keyInput ? keyInput.value : settings.tempEmail.apiKey
+  });
+}
+
+function normalizeAuthDomain(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return url.hostname.replace(/^www\./, "");
+  } catch {
+    return raw
+      .replace(/^https?:\/\//, "")
+      .split("/")[0]
+      .split(":")[0]
+      .replace(/^www\./, "")
+      .trim();
+  }
+}
+
+function normalizeAuthManualKey(value) {
+  return String(value || "")
+    .replace(/^otpauth:\/\/totp\/[^?]+\?/i, "")
+    .replace(/.*(?:^|[?&])secret=([^&]+).*/i, "$1")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+}
+
+function normalizeAuthManualKeys(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return Object.entries(source).reduce((acc, [domain, key]) => {
+    const normalizedDomain = normalizeAuthDomain(domain);
+    const normalizedKey = normalizeAuthManualKey(key);
+    if (normalizedDomain && normalizedKey) acc[normalizedDomain] = normalizedKey;
+    return acc;
+  }, {});
+}
+
+async function getCurrentTabDomain() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "page-tool", name: "get_active_tab", arguments: {} });
+    const payload = typeof response?.result === "string" ? JSON.parse(response.result) : response?.result;
+    return normalizeAuthDomain(payload?.url || "");
+  } catch {
+    return "";
+  }
+}
+
+function createAuthManualKeyRow(domain = "", manualKey = "") {
+  const row = document.createElement("div");
+  row.className = "auth-key-row";
+  row.innerHTML = `
+    <input type="text" class="auth-domain-input" placeholder="example.com" value="${escapeHtml(domain)}" autocomplete="off">
+    <input type="password" class="auth-secret-input" placeholder="manual key" value="${escapeHtml(manualKey)}" autocomplete="off">
+    <button type="button" class="mcp-remove-btn auth-remove-btn">Remove</button>
+  `;
+  row.querySelector(".auth-remove-btn")?.addEventListener("click", () => row.remove());
+  return row;
+}
+
+function renderAuthManualKeys() {
+  const list = document.getElementById("auth-manual-keys-list");
+  const badge = document.getElementById("auth-manual-keys-badge");
+  if (!list) return;
+
+  const entries = Object.entries(normalizeAuthManualKeys(settings.authManualKeys))
+    .sort(([a], [b]) => a.localeCompare(b));
+  list.innerHTML = "";
+
+  if (entries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "mcp-status";
+    empty.textContent = "No authenticator manual keys saved.";
+    list.appendChild(empty);
+  } else {
+    entries.forEach(([domain, manualKey]) => {
+      list.appendChild(createAuthManualKeyRow(domain, manualKey));
+    });
+  }
+
+  if (badge) {
+    badge.textContent = entries.length === 0 ? "None" : `${entries.length} saved`;
+    badge.className = entries.length === 0 ? "mcp-bridge-badge" : "mcp-bridge-badge connected";
+  }
+}
+
+function collectAuthManualKeysFromUI() {
+  const list = document.getElementById("auth-manual-keys-list");
+  if (!list) return normalizeAuthManualKeys(settings.authManualKeys);
+
+  const keys = {};
+  list.querySelectorAll(".auth-key-row").forEach((row) => {
+    const domain = normalizeAuthDomain(row.querySelector(".auth-domain-input")?.value);
+    const manualKey = normalizeAuthManualKey(row.querySelector(".auth-secret-input")?.value);
+    if (domain && manualKey) keys[domain] = manualKey;
+  });
+  return keys;
+}
+
+function addAuthManualKeyRow(domain = "", manualKey = "") {
+  const list = document.getElementById("auth-manual-keys-list");
+  if (!list) return;
+  if (!list.querySelector(".auth-key-row")) list.innerHTML = "";
+  list.appendChild(createAuthManualKeyRow(domain, manualKey));
+}
+
+function initAuthManualKeySettings() {
+  const addCurrentBtn = document.getElementById("add-current-domain-auth-key-btn");
+  const addComboBtn = document.getElementById("add-auth-combo-btn");
+  const comboInput = document.getElementById("auth-domain-key-combo");
+
+  addCurrentBtn?.addEventListener("click", async () => {
+    const domain = await getCurrentTabDomain();
+    if (!domain) {
+      showToast("No active website domain found");
+      return;
+    }
+    addAuthManualKeyRow(domain, "");
+    showToast(`Added ${domain}`);
+  });
+
+  addComboBtn?.addEventListener("click", () => {
+    const value = comboInput?.value || "";
+    const parts = value.split(/\s*:\s*/);
+    if (parts.length < 2) {
+      showToast("Use domain : manual key");
+      return;
+    }
+    const domain = normalizeAuthDomain(parts.shift());
+    const manualKey = normalizeAuthManualKey(parts.join(":"));
+    if (!domain || !manualKey) {
+      showToast("Domain and manual key are required");
+      return;
+    }
+    addAuthManualKeyRow(domain, manualKey);
+    if (comboInput) comboInput.value = "";
+    showToast(`Added ${domain}`);
   });
 }
 
@@ -2778,6 +2945,12 @@ async function handleSendMessage() {
 // ----------------------------------------------------
 // AGENT CONVERSATION RUN LOOP
 // ----------------------------------------------------
+function getEffectiveSystemPrompt() {
+  const basePrompt = settings.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+  if (basePrompt.includes("get_authenticator_code")) return basePrompt;
+  return `${basePrompt}\n\n${AUTHENTICATOR_SYSTEM_PROMPT_ADDENDUM}`;
+}
+
 async function runAgentCycle() {
   const chatHistory = document.getElementById("chat-history");
   if (!chatHistory || !currentChatId || agentStopRequested) return;
@@ -2808,7 +2981,7 @@ async function runAgentCycle() {
 
     // 2. Prepare API message history
     const apiMessages = [
-      { role: "system", content: settings.systemPrompt }
+      { role: "system", content: getEffectiveSystemPrompt() }
     ];
 
     // Gather last 25 turns for conversation context, formatting Vision and Tool logs
