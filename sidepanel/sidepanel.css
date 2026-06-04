@@ -1833,6 +1833,48 @@ button {
   gap: var(--space-xs);
 }
 
+.auth-key-actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.auth-combo-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.auth-combo-row input {
+  min-width: 0;
+}
+
+.auth-manual-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.auth-key-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.8fr) minmax(130px, 1fr) auto;
+  align-items: center;
+  gap: var(--space-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-field);
+  padding: 8px;
+}
+
+.auth-key-row input {
+  min-width: 0;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .mcp-status {
   font-size: 11px;
   color: var(--text-muted);
@@ -2187,5 +2229,10 @@ button {
 
   .settings-actions {
     flex-direction: column;
+  }
+
+  .auth-key-actions,
+  .auth-key-row {
+    grid-template-columns: 1fr;
   }
 }

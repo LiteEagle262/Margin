@@ -307,6 +307,22 @@
             <span class="help-text">Off by default. Requires the <code>mail-server/</code> backend running and reachable. The toggle gates whether the AI sees these tools at all — disable it to lock the AI out of the inbox API.</span>
           </div>
 
+          <div class="form-group mcp-bridge-section">
+            <div class="form-group-header">
+              <label>Authenticator Manual Keys</label>
+              <span id="auth-manual-keys-badge" class="mcp-bridge-badge">None</span>
+            </div>
+            <div class="auth-key-actions">
+              <button type="button" id="add-current-domain-auth-key-btn" class="text-btn">+ Current Domain</button>
+              <div class="auth-combo-row">
+                <input type="text" id="auth-domain-key-combo" placeholder="example.com : JBSW Y3DP EHPK 3PXP" autocomplete="off">
+                <button type="button" id="add-auth-combo-btn" class="text-btn">Add</button>
+              </div>
+            </div>
+            <div id="auth-manual-keys-list" class="auth-manual-keys-list"></div>
+            <span class="help-text">Save TOTP manual keys by domain so the AI can call <code>get_authenticator_code</code> during authorized testing. Keys are stored locally in this browser.</span>
+          </div>
+
           <div class="form-group">
             <div class="form-group-header">
               <label>MCP Client Servers</label>
@@ -319,7 +335,8 @@
           <div class="form-group">
             <label for="system-prompt">System Instructions</label>
             <textarea id="system-prompt" rows="8">You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
-You can execute actions on the current webpage using your built-in tools (get_dom, take_screenshot, click_element, scroll_page, type_text, run_js, get_active_tab, list_tabs, navigate). Use them to inspect, analyze, and build web scrapers on behalf of the user.
+You can execute actions on the current webpage using your built-in tools (get_dom, take_screenshot, click_element, scroll_page, type_text, run_js, get_active_tab, list_tabs, navigate, get_authenticator_code, list_authenticator_domains). Use them to inspect, analyze, and build web scrapers on behalf of the user.
+If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.
 For debugging API calls and page requests, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, and response bodies.
 If MCP servers are configured, you also have additional tools prefixed with mcp__ — use those when they are relevant.
 

@@ -187,6 +187,21 @@ const TOOLS = [
     description: "Clear all captured network logs for the active tab.",
     inputSchema: { type: "object", properties: {} }
   },
+  {
+    name: "get_authenticator_code",
+    description: "Generate a current 6-digit TOTP authenticator code from a saved manual key for a domain. If domain is omitted, uses the active tab hostname.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        domain: { type: "string", description: "Optional hostname or URL. Defaults to the current active tab hostname." }
+      }
+    }
+  },
+  {
+    name: "list_authenticator_domains",
+    description: "List domains that have saved authenticator manual keys. Does not reveal the keys.",
+    inputSchema: { type: "object", properties: {} }
+  },
   ...TEMP_EMAIL_TOOLS
 ];
 
