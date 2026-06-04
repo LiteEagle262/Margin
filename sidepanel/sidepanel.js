@@ -54,6 +54,14 @@ IMPORTANT — File output rules:
 const AUTHENTICATOR_SYSTEM_PROMPT_ADDENDUM =
   "If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.";
 
+const CONTEXT_PACKING = {
+  maxWindowShare: 0.86,
+  minResponseReserve: 4096,
+  maxResponseReserve: 24000,
+  recentToolResultsInline: 6,
+  archiveToolResultTokens: 2000
+};
+
 const EYE_ICON = `
   <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
     <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
@@ -305,6 +313,20 @@ const WORKSPACE_TOOLS = [
   {
     type: "function",
     function: {
+      name: "read_context_item",
+      description: "Retrieve the full original content for an archived tool result by context_item_id when a previous compact reference says more detail is available.",
+      parameters: {
+        type: "object",
+        properties: {
+          context_item_id: { type: "string", description: "The context item id shown in an archived tool result reference." }
+        },
+        required: ["context_item_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "list_files",
       description: "List all files in the persistent workspace with paths, languages, line counts, descriptions, and tags.",
       parameters: {
@@ -382,7 +404,7 @@ const WORKSPACE_TOOLS = [
 
 const WORKSPACE_TOOL_NAMES = new Set([
   "write_file", "read_file", "list_files", "search_files",
-  "get_file_info", "rename_file", "delete_file"
+  "read_context_item", "get_file_info", "rename_file", "delete_file"
 ]);
 
 // Initialize Sidebar
@@ -628,31 +650,230 @@ function getActiveModelInfo() {
   };
 }
 
+function getResponseReserveTokens(contextWindow) {
+  const reserve = Math.round(contextWindow * 0.12);
+  return Math.max(
+    CONTEXT_PACKING.minResponseReserve,
+    Math.min(CONTEXT_PACKING.maxResponseReserve, reserve)
+  );
+}
+
+function getModelMessageBudget() {
+  const model = getActiveModelInfo();
+  const contextWindow = model.contextWindow || 128000;
+  const toolsTokens = approxTokens(getAllAgentTools());
+  const systemTokens = approxTokens(getEffectiveSystemPrompt());
+  const reserveTokens = getResponseReserveTokens(contextWindow);
+  const maxPromptTokens = Math.floor(contextWindow * CONTEXT_PACKING.maxWindowShare);
+  return Math.max(2000, maxPromptTokens - reserveTokens - toolsTokens - systemTokens);
+}
+
+function countApiMessageTokens(message) {
+  let total = approxTokens(message.role || "");
+  if (typeof message.content === "string") {
+    total += approxTokens(message.content);
+  } else if (Array.isArray(message.content)) {
+    message.content.forEach(part => {
+      if (part.type === "text") total += approxTokens(part.text || "");
+      if (part.type === "image_url") total += 1024;
+    });
+  }
+  if (Array.isArray(message.tool_calls)) total += approxTokens(message.tool_calls);
+  if (message.tool_call_id) total += approxTokens(message.tool_call_id);
+  if (message.name) total += approxTokens(message.name);
+  return total;
+}
+
+function blockTokenCount(block) {
+  return block.messages.reduce((sum, message) => sum + countApiMessageTokens(message), 0);
+}
+
+function getRecentInlineToolCallIds(messages) {
+  const ids = new Set();
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== "tool" || !msg.tool_call_id) continue;
+    ids.add(msg.tool_call_id);
+    if (ids.size >= CONTEXT_PACKING.recentToolResultsInline) break;
+  }
+  return ids;
+}
+
+function getContextItemId(msg) {
+  return `tool_${msg.tool_call_id || ""}`;
+}
+
+function getContextItem(contextItemId) {
+  const activeChat = chats[currentChatId];
+  if (!activeChat || !Array.isArray(activeChat.messages)) return null;
+  return activeChat.messages.find(msg =>
+    msg.role === "tool" && getContextItemId(msg) === contextItemId
+  ) || null;
+}
+
+function summarizeToolContent(content) {
+  const text = String(content || "");
+  const oneLine = text
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 700);
+  return oneLine || "(empty result)";
+}
+
+function formatToolContentForModel(msg, inlineToolCallIds) {
+  const content = String(msg.content || "");
+  const shouldArchive =
+    msg.tool_call_id &&
+    !inlineToolCallIds.has(msg.tool_call_id) &&
+    approxTokens(content) > CONTEXT_PACKING.archiveToolResultTokens;
+
+  if (!shouldArchive) return content;
+
+  const contextItemId = getContextItemId(msg);
+  return [
+    `[Archived tool result: ${contextItemId}]`,
+    `Tool: ${msg.name || "unknown"}`,
+    `Original size: about ${formatTokens(approxTokens(content))} tokens.`,
+    `Preview: ${summarizeToolContent(content)}`,
+    `Use read_context_item with context_item_id="${contextItemId}" if you need the full original result.`
+  ].join("\n");
+}
+
+function formatStoredMessageForModel(msg, inlineToolCallIds) {
+  if (msg.role === "user") {
+    const contents = [];
+    contents.push({ type: "text", text: msg.content || "Analyze page elements." });
+    if (msg.images && msg.images.length > 0) {
+      msg.images.forEach(imgBase64 => {
+        contents.push({
+          type: "image_url",
+          image_url: { url: imgBase64 }
+        });
+      });
+    }
+    return { role: "user", content: contents };
+  }
+
+  if (msg.role === "assistant") {
+    if (msg.tool_calls) {
+      return {
+        role: "assistant",
+        content: msg.content || null,
+        tool_calls: msg.tool_calls
+      };
+    }
+    return { role: "assistant", content: msg.content || "" };
+  }
+
+  if (msg.role === "tool") {
+    return {
+      role: "tool",
+      tool_call_id: msg.tool_call_id,
+      name: msg.name,
+      content: formatToolContentForModel(msg, inlineToolCallIds)
+    };
+  }
+
+  return null;
+}
+
+function buildModelMessageBlocks(activeChat) {
+  if (!activeChat || !Array.isArray(activeChat.messages)) return [];
+  const inlineToolCallIds = getRecentInlineToolCallIds(activeChat.messages);
+  const blocks = [];
+
+  for (let i = 0; i < activeChat.messages.length; i++) {
+    const msg = activeChat.messages[i];
+    if (!msg || msg.role === "tool-status" || msg.role === "file-artifact") continue;
+
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      const blockMessages = [formatStoredMessageForModel(msg, inlineToolCallIds)];
+      const expectedToolIds = new Set(msg.tool_calls.map(tc => tc.id).filter(Boolean));
+      let j = i + 1;
+      while (j < activeChat.messages.length) {
+        const next = activeChat.messages[j];
+        if (next?.role === "tool-status" || next?.role === "file-artifact") {
+          j++;
+          continue;
+        }
+        if (next?.role === "tool" && expectedToolIds.has(next.tool_call_id)) {
+          blockMessages.push(formatStoredMessageForModel(next, inlineToolCallIds));
+          j++;
+          continue;
+        }
+        break;
+      }
+      blocks.push({ messages: blockMessages });
+      i = j - 1;
+      continue;
+    }
+
+    if (msg.role === "tool") continue;
+
+    const formatted = formatStoredMessageForModel(msg, inlineToolCallIds);
+    if (formatted) blocks.push({ messages: [formatted] });
+  }
+
+  return blocks;
+}
+
+function buildApiMessagesForChat(activeChat) {
+  const systemMessage = { role: "system", content: getEffectiveSystemPrompt() };
+  const budget = getModelMessageBudget();
+  const blocks = buildModelMessageBlocks(activeChat);
+  const selected = [];
+  let used = 0;
+  let omitted = 0;
+
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    const blockTokens = blockTokenCount(block);
+    if (selected.length > 0 && used + blockTokens > budget) {
+      omitted = i + 1;
+      break;
+    }
+    selected.unshift(block);
+    used += blockTokens;
+  }
+
+  if (omitted > 0) {
+    systemMessage.content += `\n\nContext note: ${omitted} older conversation block(s) were left out to fit the active model context window. Older large tool results may be available through read_context_item when referenced by id.`;
+  }
+
+  return [
+    systemMessage,
+    ...selected.flatMap(block => block.messages)
+  ];
+}
+
 function computeContextBreakdown() {
   const breakdown = { system: 0, browserTools: 0, mcpTools: 0, chat: 0, toolIO: 0, images: 0 };
 
-  breakdown.system += approxTokens(settings.systemPrompt || "");
+  breakdown.system += approxTokens(getEffectiveSystemPrompt());
   breakdown.browserTools += approxTokens([...BROWSER_TOOLS, ...WORKSPACE_TOOLS]);
   const mcpTools = getMcpToolSchemas();
   if (mcpTools.length > 0) breakdown.mcpTools += approxTokens(mcpTools);
 
   const activeChat = chats[currentChatId];
-  if (activeChat && Array.isArray(activeChat.messages)) {
-    // Mirror what runAgentCycle sends: the full stored conversation.
-    activeChat.messages.forEach(msg => {
+  if (activeChat) {
+    const apiMessages = buildApiMessagesForChat(activeChat).slice(1);
+    apiMessages.forEach(msg => {
       if (msg.role === "user") {
-        breakdown.chat += approxTokens(msg.content || "");
-        if (Array.isArray(msg.images)) breakdown.images += msg.images.length * 1024;
-      } else if (msg.role === "assistant") {
-        breakdown.chat += approxTokens(msg.content || "");
-        if (Array.isArray(msg.tool_calls)) {
-          msg.tool_calls.forEach(tc => {
-            breakdown.toolIO += approxTokens(tc.function?.name || "");
-            breakdown.toolIO += approxTokens(tc.function?.arguments || "");
+        if (Array.isArray(msg.content)) {
+          msg.content.forEach(part => {
+            if (part.type === "text") breakdown.chat += approxTokens(part.text || "");
+            if (part.type === "image_url") breakdown.images += 1024;
           });
+        } else {
+          breakdown.chat += approxTokens(msg.content || "");
         }
+      } else if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+        breakdown.chat += approxTokens(msg.content || "");
+        breakdown.toolIO += approxTokens(msg.tool_calls);
+      } else if (msg.role === "assistant") {
+        breakdown.chat += countApiMessageTokens(msg);
       } else if (msg.role === "tool") {
-        breakdown.toolIO += approxTokens(msg.content || "");
+        breakdown.toolIO += countApiMessageTokens(msg);
       }
     });
   }
@@ -2342,6 +2563,16 @@ async function executeWorkspaceTool(name, args = {}) {
       return file.content;
     }
 
+    case "read_context_item": {
+      const contextItemId = String(args.context_item_id || "").trim();
+      if (!contextItemId) return "Error: read_context_item requires context_item_id.";
+      const item = getContextItem(contextItemId);
+      if (!item) {
+        return `Error: Context item "${contextItemId}" was not found in the current chat.`;
+      }
+      return item.content || "";
+    }
+
     case "list_files": {
       const allFiles = Object.values(getAllWorkspaceFiles());
       const tagFilter = args.tag ? String(args.tag).trim().toLowerCase() : "";
@@ -3253,44 +3484,8 @@ async function runAgentCycle() {
       await refreshMcpTools();
     }
 
-    // 2. Prepare API message history
-    const apiMessages = [
-      { role: "system", content: getEffectiveSystemPrompt() }
-    ];
-
-    // Gather the full stored conversation context, formatting Vision and Tool logs.
-    activeChat.messages.forEach(msg => {
-      if (msg.role === "user") {
-        const contents = [];
-        contents.push({ type: "text", text: msg.content || "Analyze page elements." });
-        if (msg.images && msg.images.length > 0) {
-          msg.images.forEach(imgBase64 => {
-            contents.push({
-              type: "image_url",
-              image_url: { url: imgBase64 }
-            });
-          });
-        }
-        apiMessages.push({ role: "user", content: contents });
-      } else if (msg.role === "assistant") {
-        if (msg.tool_calls) {
-          apiMessages.push({
-            role: "assistant",
-            content: msg.content || null,
-            tool_calls: msg.tool_calls
-          });
-        } else {
-          apiMessages.push({ role: "assistant", content: msg.content });
-        }
-      } else if (msg.role === "tool") {
-        apiMessages.push({
-          role: "tool",
-          tool_call_id: msg.tool_call_id,
-          name: msg.name,
-          content: msg.content
-        });
-      }
-    });
+    // 2. Prepare model transcript from the UI chat history.
+    const apiMessages = buildApiMessagesForChat(activeChat);
 
     const providerPreferences = buildProviderPreferences();
     const requestBody = {
