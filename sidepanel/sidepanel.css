@@ -470,6 +470,9 @@ button {
 }
 
 .message-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 4px;
   color: var(--text-faint);
   font-size: 10.5px;
@@ -485,7 +488,78 @@ button {
 }
 
 .user .message-meta {
-  text-align: right;
+  justify-content: flex-end;
+}
+
+.message-meta.editing {
+  opacity: 1;
+}
+
+.message-edit-btn,
+.message-edit-action {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.message-edit-btn:hover,
+.message-edit-action:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.message-editor {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.message-edit-textarea {
+  width: 100%;
+  min-height: 68px;
+  max-height: 180px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-field);
+  color: var(--text);
+  outline: 0;
+  resize: none;
+  line-height: 1.45;
+}
+
+.user .message-edit-textarea {
+  background: oklch(0.97 0.003 255);
+  border-color: oklch(0.72 0.004 255);
+  color: var(--bg);
+}
+
+.message-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+}
+
+.message-edit-action {
+  color: var(--text-soft);
+}
+
+.user .message-edit-action {
+  color: var(--bg);
+}
+
+.user .message-edit-action:hover {
+  background: oklch(0.9 0.003 255);
+  border-color: oklch(0.72 0.004 255);
+  color: var(--bg);
 }
 
 .loading-msg .message-content {

@@ -254,6 +254,20 @@
             <span class="help-text" id="model-picker-status">Save your API key, then search and pick any OpenRouter model.</span>
           </div>
 
+          <div class="form-group">
+            <label for="reasoning-effort">Reasoning Level</label>
+            <select id="reasoning-effort">
+              <option value="auto">Auto</option>
+              <option value="none">None</option>
+              <option value="minimal">Minimal</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">X-High</option>
+            </select>
+            <span class="help-text">Auto leaves model/provider defaults untouched. Higher levels can improve complex tasks but may increase latency and token cost when supported.</span>
+          </div>
+
           <div class="form-group provider-routing-section">
             <div class="form-group-header">
               <label>OpenRouter Provider Routing</label>

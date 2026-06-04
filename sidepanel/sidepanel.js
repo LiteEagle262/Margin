@@ -22,6 +22,9 @@ let settings = {
     order: [],
     allowFallbacks: true
   },
+  reasoning: {
+    effort: "auto"
+  },
   authManualKeys: {}
 };
 
@@ -85,6 +88,26 @@ const SEND_ICON = `
 const STOP_ICON = `
   <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
     <rect x="6" y="6" width="12" height="12" rx="1"/>
+  </svg>
+`;
+
+const EDIT_ICON = `
+  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 20h9"/>
+    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+  </svg>
+`;
+
+const CHECK_ICON = `
+  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="20 6 9 17 4 12"/>
+  </svg>
+`;
+
+const X_ICON = `
+  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18"/>
+    <line x1="6" y1="6" x2="18" y2="18"/>
   </svg>
 `;
 
@@ -446,7 +469,7 @@ async function init() {
 // ----------------------------------------------------
 async function loadSettings() {
   try {
-    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "providerRouting", "authManualKeys"]);
+    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "providerRouting", "reasoning", "authManualKeys"]);
     settings.apiKey = result.apiKey || "";
     settings.model = result.model || "anthropic/claude-3.5-sonnet";
     if (settings.model === "custom" && result.customModel) {
@@ -457,6 +480,7 @@ async function loadSettings() {
     settings.mcpBridge = normalizeMcpBridgeSettings(result.mcpBridge);
     settings.tempEmail = normalizeTempEmailSettings(result.tempEmail);
     settings.providerRouting = normalizeProviderRoutingSettings(result.providerRouting);
+    settings.reasoning = normalizeReasoningSettings(result.reasoning);
     settings.authManualKeys = normalizeAuthManualKeys(result.authManualKeys);
 
     const apiKeyInput = document.getElementById("openrouter-api-key");
@@ -467,6 +491,7 @@ async function loadSettings() {
     renderMcpBridgeSettings();
     renderTempEmailSettings();
     renderProviderRoutingSettings();
+    renderReasoningSettings();
     renderAuthManualKeys();
 
     const systemPromptTextarea = document.getElementById("system-prompt");
@@ -1275,6 +1300,7 @@ if (settingsForm) {
       settings.mcpBridge = collectMcpBridgeFromUI();
       settings.tempEmail = collectTempEmailFromUI();
       settings.providerRouting = collectProviderRoutingFromUI();
+      settings.reasoning = collectReasoningFromUI();
       settings.authManualKeys = collectAuthManualKeysFromUI();
 
       await chrome.storage.local.set({
@@ -1285,6 +1311,7 @@ if (settingsForm) {
         mcpBridge: settings.mcpBridge,
         tempEmail: settings.tempEmail,
         providerRouting: settings.providerRouting,
+        reasoning: settings.reasoning,
         authManualKeys: settings.authManualKeys
       });
       await refreshMcpTools();
@@ -1391,8 +1418,8 @@ async function recordAgentStopped() {
   const activeChat = chats[currentChatId];
   const lastMsg = activeChat.messages[activeChat.messages.length - 1];
   if (lastMsg?.content === "Response stopped.") return;
-  appendMessageUI("assistant", "*Response stopped.*");
-  activeChat.messages.push({ role: "assistant", content: "Response stopped." });
+  const messageIndex = activeChat.messages.push({ role: "assistant", content: "Response stopped." }) - 1;
+  appendMessageUI("assistant", "*Response stopped.*", [], true, { messageIndex });
   await saveChats();
 }
 
@@ -1661,8 +1688,37 @@ function initModelPicker() {
 }
 
 // ----------------------------------------------------
-// OPENROUTER PROVIDER ROUTING
+// OPENROUTER REASONING & PROVIDER ROUTING
 // ----------------------------------------------------
+const REASONING_EFFORTS = new Set(["auto", "none", "minimal", "low", "medium", "high", "xhigh"]);
+
+function normalizeReasoningSettings(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  return {
+    effort: REASONING_EFFORTS.has(value.effort) ? value.effort : "auto"
+  };
+}
+
+function collectReasoningFromUI() {
+  const effortInput = document.getElementById("reasoning-effort");
+  return normalizeReasoningSettings({
+    effort: effortInput ? effortInput.value : settings.reasoning.effort
+  });
+}
+
+function renderReasoningSettings() {
+  const effortInput = document.getElementById("reasoning-effort");
+  if (!effortInput) return;
+  const reasoning = normalizeReasoningSettings(settings.reasoning);
+  effortInput.value = reasoning.effort;
+}
+
+function buildReasoningPreferences() {
+  const reasoning = normalizeReasoningSettings(settings.reasoning);
+  if (reasoning.effort === "auto") return null;
+  return { effort: reasoning.effort };
+}
+
 const PROVIDER_ROUTING_MODES = new Set(["auto", "ordered", "price", "throughput", "latency"]);
 
 function normalizeProviderSlug(value) {
@@ -2909,9 +2965,9 @@ function renderChatHistory() {
 
   const activeChat = chats[currentChatId];
   if (activeChat && activeChat.messages) {
-    activeChat.messages.forEach(msg => {
+    activeChat.messages.forEach((msg, index) => {
       if (msg.role === "user" || msg.role === "assistant") {
-        appendMessageUI(msg.role, msg.content, msg.images || [], false);
+        appendMessageUI(msg.role, msg.content, msg.images || [], false, { messageIndex: index });
       } else if (msg.role === "tool-status") {
         appendMessageUI("tool-status", msg.content, [], false);
       } else if (msg.role === "file-artifact") {
@@ -2925,7 +2981,7 @@ function renderChatHistory() {
   chatHistory.scrollTop = chatHistory.scrollHeight;
 }
 
-function appendMessageUI(role, content, images = [], shouldScroll = true) {
+function appendMessageUI(role, content, images = [], shouldScroll = true, options = {}) {
   const chatHistory = document.getElementById("chat-history");
   if (!chatHistory) return;
 
@@ -2946,6 +3002,9 @@ function appendMessageUI(role, content, images = [], shouldScroll = true) {
 
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${role}`;
+  if (Number.isInteger(options.messageIndex)) {
+    msgDiv.dataset.messageIndex = String(options.messageIndex);
+  }
 
   const contentDiv = document.createElement("div");
   contentDiv.className = "message-content";
@@ -2976,7 +3035,7 @@ function appendMessageUI(role, content, images = [], shouldScroll = true) {
   
   // Text
   const textParagraph = document.createElement("div");
-  textParagraph.className = "markdown";
+  textParagraph.className = "markdown message-text";
   textParagraph.innerHTML = formatMarkdown(content);
   contentDiv.appendChild(textParagraph);
   
@@ -2984,7 +3043,21 @@ function appendMessageUI(role, content, images = [], shouldScroll = true) {
   
   const metaDiv = document.createElement("div");
   metaDiv.className = "message-meta";
-  metaDiv.textContent = role === "user" ? "You" : "ScrapeFlow";
+  const metaLabel = document.createElement("span");
+  metaLabel.className = "message-meta-label";
+  metaLabel.textContent = getMessageMetaLabel(role, options.messageIndex);
+  metaDiv.appendChild(metaLabel);
+
+  if (canEditStoredMessage(role, options.messageIndex)) {
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "message-edit-btn";
+    editBtn.title = "Edit message";
+    editBtn.setAttribute("aria-label", "Edit message");
+    editBtn.innerHTML = EDIT_ICON;
+    editBtn.addEventListener("click", () => startMessageEdit(msgDiv, options.messageIndex));
+    metaDiv.appendChild(editBtn);
+  }
   msgDiv.appendChild(metaDiv);
   
   chatHistory.appendChild(msgDiv);
@@ -2994,6 +3067,145 @@ function appendMessageUI(role, content, images = [], shouldScroll = true) {
   if (shouldScroll) {
     chatHistory.scrollTop = chatHistory.scrollHeight;
     updateUsageBar();
+  }
+}
+
+function getMessageMetaLabel(role, messageIndex) {
+  const fallback = role === "user" ? "You" : "ScrapeFlow";
+  const msg = getStoredMessage(messageIndex);
+  if (!msg?.editedAt) return fallback;
+  return `${fallback} - edited`;
+}
+
+function getStoredMessage(messageIndex) {
+  if (!Number.isInteger(messageIndex) || !currentChatId || !chats[currentChatId]) return null;
+  const messages = chats[currentChatId].messages;
+  if (!Array.isArray(messages) || messageIndex < 0 || messageIndex >= messages.length) return null;
+  return messages[messageIndex] || null;
+}
+
+function canEditStoredMessage(role, messageIndex) {
+  if (isAgentRunning) return false;
+  const msg = getStoredMessage(messageIndex);
+  if (!msg || msg.role !== role) return false;
+  if (role === "user") return true;
+  return role === "assistant" && !Array.isArray(msg.tool_calls);
+}
+
+function startMessageEdit(msgDiv, messageIndex) {
+  const msg = getStoredMessage(messageIndex);
+  if (!msg || !canEditStoredMessage(msg.role, messageIndex)) return;
+
+  const contentDiv = msgDiv.querySelector(".message-content");
+  const messageText = contentDiv?.querySelector(".message-text");
+  const metaDiv = msgDiv.querySelector(".message-meta");
+  if (!contentDiv || !messageText || !metaDiv) return;
+
+  const originalText = msg.content || "";
+  const editor = document.createElement("div");
+  editor.className = "message-editor";
+  editor.innerHTML = `
+    <textarea class="message-edit-textarea" rows="3"></textarea>
+    <div class="message-edit-actions">
+      <button type="button" class="message-edit-action message-edit-save" title="Save edit" aria-label="Save edit">${CHECK_ICON}</button>
+      <button type="button" class="message-edit-action" title="Cancel edit" aria-label="Cancel edit">${X_ICON}</button>
+    </div>
+  `;
+
+  const textarea = editor.querySelector(".message-edit-textarea");
+  const saveBtn = editor.querySelector(".message-edit-save");
+  const cancelBtn = editor.querySelector(".message-edit-action:not(.message-edit-save)");
+
+  textarea.value = originalText;
+  textarea.style.height = "auto";
+  textarea.style.height = Math.min(textarea.scrollHeight, 180) + "px";
+
+  const finishCancel = () => {
+    editor.replaceWith(messageText);
+    metaDiv.classList.remove("editing");
+  };
+
+  messageText.replaceWith(editor);
+  metaDiv.classList.add("editing");
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+  textarea.addEventListener("input", () => {
+    textarea.style.height = "auto";
+    textarea.style.height = Math.min(textarea.scrollHeight, 180) + "px";
+  });
+
+  textarea.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      finishCancel();
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      commitMessageEdit(messageIndex, textarea.value);
+    }
+  });
+
+  saveBtn.addEventListener("click", () => commitMessageEdit(messageIndex, textarea.value));
+  cancelBtn.addEventListener("click", finishCancel);
+}
+
+async function commitMessageEdit(messageIndex, nextContent) {
+  const msg = getStoredMessage(messageIndex);
+  if (!msg || !canEditStoredMessage(msg.role, messageIndex)) return;
+
+  const trimmed = String(nextContent || "").trim();
+  if (!trimmed && (!Array.isArray(msg.images) || msg.images.length === 0)) {
+    showToast("Message cannot be empty");
+    return;
+  }
+
+  const activeChat = chats[currentChatId];
+  const originalRole = msg.role;
+  const changed = (msg.content || "") !== trimmed;
+
+  if (!changed) {
+    renderChatHistory();
+    return;
+  }
+
+  activeChat.messages[messageIndex] = {
+    ...msg,
+    content: trimmed,
+    editedAt: Date.now()
+  };
+  activeChat.timestamp = Date.now();
+
+  if (messageIndex === 0 && originalRole === "user") {
+    activeChat.title = trimmed ? (trimmed.slice(0, 24) + (trimmed.length > 24 ? "..." : "")) : "Image Upload Chat";
+  }
+
+  if (originalRole === "user") {
+    activeChat.messages = activeChat.messages.slice(0, messageIndex + 1);
+  }
+
+  await saveChats();
+  renderChatHistory();
+  renderHistoryList();
+
+  if (originalRole !== "user") {
+    showToast("Message edited");
+    return;
+  }
+  if (!settings.apiKey) {
+    showToast("Message edited. Add an API key to regenerate.");
+    return;
+  }
+
+  showToast("Message edited. Regenerating...");
+  beginAgentRun();
+  try {
+    await runAgentCycle();
+  } finally {
+    if (agentStopRequested) {
+      await recordAgentStopped();
+    }
+    endAgentRun();
   }
 }
 
@@ -3430,8 +3642,8 @@ async function handleSendMessage() {
   }
 
   // Append user message
-  appendMessageUI("user", userInput, imagesToSend);
-  activeChat.messages.push({ role: "user", content: userInput, images: imagesToSend });
+  const messageIndex = activeChat.messages.push({ role: "user", content: userInput, images: imagesToSend }) - 1;
+  appendMessageUI("user", userInput, imagesToSend, true, { messageIndex });
   await saveChats();
   renderHistoryList();
 
@@ -3488,6 +3700,7 @@ async function runAgentCycle() {
     const apiMessages = buildApiMessagesForChat(activeChat);
 
     const providerPreferences = buildProviderPreferences();
+    const reasoningPreferences = buildReasoningPreferences();
     const requestBody = {
       model: activeModel,
       messages: apiMessages,
@@ -3498,6 +3711,9 @@ async function runAgentCycle() {
     };
     if (providerPreferences) {
       requestBody.provider = providerPreferences;
+    }
+    if (reasoningPreferences) {
+      requestBody.reasoning = reasoningPreferences;
     }
 
     // 3. OpenRouter fetch request
@@ -3646,8 +3862,8 @@ async function runAgentCycle() {
     } else {
       // Regular response from assistant
       const aiReply = responseMsg.content || "";
-      appendMessageUI("assistant", aiReply);
-      activeChat.messages.push({ role: "assistant", content: aiReply });
+      const messageIndex = activeChat.messages.push({ role: "assistant", content: aiReply }) - 1;
+      appendMessageUI("assistant", aiReply, [], true, { messageIndex });
       await saveChats();
     }
 
@@ -3655,8 +3871,9 @@ async function runAgentCycle() {
     if (loadingDiv) loadingDiv.remove();
     if (error.name === "AbortError" || agentStopRequested) return;
     console.error(error);
-    appendMessageUI("assistant", `**Error:** ${error.message}`);
-    activeChat.messages.push({ role: "assistant", content: `Error occurred during agent turn: ${error.message}` });
+    const errorContent = `Error occurred during agent turn: ${error.message}`;
+    const messageIndex = activeChat.messages.push({ role: "assistant", content: errorContent }) - 1;
+    appendMessageUI("assistant", `**Error:** ${error.message}`, [], true, { messageIndex });
     await saveChats();
   }
 }
