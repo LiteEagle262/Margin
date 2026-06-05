@@ -267,6 +267,39 @@ button {
   color: var(--text);
 }
 
+.balance-badge {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  max-width: 132px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-field);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.balance-badge.active {
+  border-color: color-mix(in oklch, var(--success), var(--border) 58%);
+  color: var(--text);
+}
+
+.balance-badge.loading {
+  color: var(--text-faint);
+}
+
+.balance-badge.error {
+  border-color: color-mix(in oklch, var(--warning), var(--border) 60%);
+  color: var(--warning);
+}
+
 .header-icon-btn,
 .attach-btn,
 .send-btn,
@@ -2377,6 +2410,10 @@ button {
 
   .badge {
     max-width: 86px;
+  }
+
+  .balance-badge {
+    max-width: 96px;
   }
 
   .chat-history,
