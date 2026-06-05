@@ -32,6 +32,7 @@ let openRouterModels = [];
 let openRouterModelsLoading = false;
 let openRouterEndpoints = [];
 let openRouterEndpointsLoading = false;
+let openRouterBalanceRequestId = 0;
 let mcpToolRegistry = new Map(); // toolName -> { serverId, serverName, originalName }
 
 let chats = {};            // Dictionary of chat sessions: { [chatId]: { id, title, messages: [], timestamp } }
@@ -459,6 +460,7 @@ async function init() {
     initLatchTab();
     renderWorkspaceStrip();
     updateModelBadge();
+    refreshOpenRouterBalance();
   } catch (err) {
     console.error("Initialization error:", err);
   }
@@ -1318,6 +1320,7 @@ if (settingsForm) {
       chrome.runtime.sendMessage({ type: "mcp-bridge/reconnect" });
       chrome.runtime.sendMessage({ type: "mcp-bridge/feature-flags-changed" });
       updateModelBadge();
+      refreshOpenRouterBalance();
       showToast("Settings saved successfully!");
       switchView("chat");
     } catch (err) {
@@ -1340,6 +1343,7 @@ if (resetDataBtn) {
         createNewChatSession();
         await loadSettings();
         updateModelBadge();
+        refreshOpenRouterBalance();
         renderWorkspaceStrip();
         showToast("All data cleared.");
       } catch (err) {
@@ -1442,6 +1446,125 @@ function updateModelBadge() {
   if (sendBtn && !isAgentRunning) sendBtn.disabled = false;
   // Model change shifts the context window + pricing rates the meter uses.
   updateUsageBar();
+}
+
+function setOpenRouterBalanceBadge(text, { state = "", title = "OpenRouter balance" } = {}) {
+  const badge = document.getElementById("openrouter-balance-badge");
+  if (!badge) return;
+
+  badge.textContent = text;
+  badge.title = title;
+  badge.classList.toggle("active", state === "active");
+  badge.classList.toggle("loading", state === "loading");
+  badge.classList.toggle("error", state === "error");
+}
+
+function formatUsdBalance(value) {
+  if (!Number.isFinite(value)) return "--";
+  const absValue = Math.abs(value);
+  const digits = absValue < 1 ? 4 : 2;
+  return `${value < 0 ? "-" : ""}$${absValue.toFixed(digits)}`;
+}
+
+async function refreshOpenRouterBalance() {
+  const requestId = ++openRouterBalanceRequestId;
+
+  if (!settings.apiKey) {
+    setOpenRouterBalanceBadge("Balance --", {
+      title: "Add an OpenRouter API key to show balance"
+    });
+    return;
+  }
+
+  setOpenRouterBalanceBadge("Balance ...", {
+    state: "loading",
+    title: "Refreshing OpenRouter balance"
+  });
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/credits", {
+      headers: {
+        Authorization: `Bearer ${settings.apiKey}`,
+        "HTTP-Referer": "https://github.com/scrapeflow",
+        "X-Title": "ScrapeFlow Chat"
+      }
+    });
+
+    if (requestId !== openRouterBalanceRequestId) return;
+
+    if (response.ok) {
+      const payload = await response.json();
+      const totalCredits = Number(payload?.data?.total_credits);
+      const totalUsage = Number(payload?.data?.total_usage);
+      const balance = totalCredits - totalUsage;
+
+      if (!Number.isFinite(balance)) {
+        throw new Error("OpenRouter credits response did not include total credits and usage.");
+      }
+
+      setOpenRouterBalanceBadge(`Balance ${formatUsdBalance(balance)}`, {
+        state: "active",
+        title: `OpenRouter balance: ${formatUsdBalance(balance)} (${formatUsdBalance(totalUsage)} used of ${formatUsdBalance(totalCredits)})`
+      });
+      return;
+    }
+
+    const creditsError = await response.text();
+    const keyBalance = await fetchOpenRouterKeyBalance(settings.apiKey);
+    if (requestId !== openRouterBalanceRequestId) return;
+
+    if (keyBalance) {
+      setOpenRouterBalanceBadge(keyBalance.label, {
+        state: "active",
+        title: keyBalance.title
+      });
+      return;
+    }
+
+    throw new Error(`OpenRouter credits error (${response.status}): ${creditsError}`);
+  } catch (err) {
+    if (requestId !== openRouterBalanceRequestId) return;
+    console.error("OpenRouter balance fetch error:", err);
+    setOpenRouterBalanceBadge("Balance unavailable", {
+      state: "error",
+      title: err.message
+    });
+  }
+}
+
+async function fetchOpenRouterKeyBalance(apiKey) {
+  const response = await fetch("https://openrouter.ai/api/v1/key", {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://github.com/scrapeflow",
+      "X-Title": "ScrapeFlow Chat"
+    }
+  });
+
+  if (!response.ok) return null;
+
+  const payload = await response.json();
+  const data = payload?.data || {};
+  const remaining = Number(data.limit_remaining);
+  const usage = Number(data.usage);
+  const limit = Number(data.limit);
+
+  if (Number.isFinite(remaining)) {
+    const limitText = Number.isFinite(limit) ? ` of ${formatUsdBalance(limit)}` : "";
+    return {
+      label: `Key ${formatUsdBalance(remaining)}`,
+      title: `OpenRouter key remaining: ${formatUsdBalance(remaining)}${limitText}`
+    };
+  }
+
+  if (Number.isFinite(usage)) {
+    return {
+      label: `Used ${formatUsdBalance(usage)}`,
+      title: `OpenRouter key usage: ${formatUsdBalance(usage)}`
+    };
+  }
+
+  return null;
 }
 
 function showToast(message) {
@@ -1683,6 +1806,9 @@ function initModelPicker() {
   if (apiKeyInput) {
     apiKeyInput.addEventListener("change", () => {
       openRouterModels = [];
+      settings.apiKey = apiKeyInput.value.trim();
+      updateModelBadge();
+      refreshOpenRouterBalance();
     });
   }
 }
