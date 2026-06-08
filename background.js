@@ -26,6 +26,10 @@ let tempEmailConfig = {
   apiKey: ""
 };
 
+let toolAccessConfig = {
+  enabled: {}
+};
+
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error("Error setting side panel behavior:", error));
@@ -34,6 +38,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   await ensureMcpBridgeDefaults();
   await loadMcpBridgeConfig();
   await loadTempEmailConfig();
+  await loadToolAccessConfig();
   await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
   chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 });
@@ -42,6 +47,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
   await loadMcpBridgeConfig();
   await loadTempEmailConfig();
+  await loadToolAccessConfig();
   await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
 });
@@ -54,6 +60,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.tempEmail) {
     tempEmailConfig = normalizeTempEmailConfig(changes.tempEmail.newValue);
+    sendFeatureFlagsToBridge();
+  }
+  if (changes.toolAccess) {
+    toolAccessConfig = normalizeToolAccessConfig(changes.toolAccess.newValue);
     sendFeatureFlagsToBridge();
   }
   if (changes.networkCapture) {
@@ -194,6 +204,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "mcp-bridge/feature-flags-changed") {
     (async () => {
       await loadTempEmailConfig();
+      await loadToolAccessConfig();
       sendFeatureFlagsToBridge();
       sendResponse({ ok: true });
     })();
@@ -281,6 +292,17 @@ async function loadTempEmailConfig() {
   tempEmailConfig = normalizeTempEmailConfig(stored.tempEmail);
 }
 
+function normalizeToolAccessConfig(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  const enabled = value.enabled && typeof value.enabled === "object" ? value.enabled : {};
+  return { enabled };
+}
+
+async function loadToolAccessConfig() {
+  const stored = await chrome.storage.local.get(["toolAccess"]);
+  toolAccessConfig = normalizeToolAccessConfig(stored.toolAccess);
+}
+
 async function syncNetworkAutoCaptureFromStorage() {
   try {
     const stored = await chrome.storage.session.get(["latchedTab"]);
@@ -301,7 +323,8 @@ function sendFeatureFlagsToBridge() {
           enabled: tempEmailConfig.enabled === true,
           apiUrl: tempEmailConfig.apiUrl || "",
           apiKey: tempEmailConfig.apiKey || ""
-        }
+        },
+        toolAccess: toolAccessConfig
       }
     }));
   } catch (e) {
@@ -453,4 +476,5 @@ loadMcpBridgeConfig().then(() => {
 });
 
 loadTempEmailConfig();
+loadToolAccessConfig();
 syncNetworkAutoCaptureFromStorage();
