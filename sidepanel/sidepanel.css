@@ -271,6 +271,7 @@ button {
   min-height: 26px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   flex: 0 1 auto;
   max-width: 132px;
   padding: 0 8px;
@@ -284,6 +285,14 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.balance-badge:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 .balance-badge.active {
@@ -293,6 +302,7 @@ button {
 
 .balance-badge.loading {
   color: var(--text-faint);
+  cursor: wait;
 }
 
 .balance-badge.error {

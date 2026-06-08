@@ -1675,6 +1675,7 @@ function setOpenRouterBalanceBadge(text, { state = "", title = "OpenRouter balan
 
   badge.textContent = text;
   badge.title = title;
+  badge.setAttribute("aria-label", title);
   badge.classList.toggle("active", state === "active");
   badge.classList.toggle("loading", state === "loading");
   badge.classList.toggle("error", state === "error");
@@ -1773,14 +1774,14 @@ async function fetchOpenRouterKeyBalance(apiKey) {
   if (Number.isFinite(remaining)) {
     const limitText = Number.isFinite(limit) ? ` of ${formatUsdBalance(limit)}` : "";
     return {
-      label: `Key ${formatUsdBalance(remaining)}`,
+      label: `Balance ${formatUsdBalance(remaining)}`,
       title: `OpenRouter key remaining: ${formatUsdBalance(remaining)}${limitText}`
     };
   }
 
   if (Number.isFinite(usage)) {
     return {
-      label: `Used ${formatUsdBalance(usage)}`,
+      label: `Balance --`,
       title: `OpenRouter key usage: ${formatUsdBalance(usage)}`
     };
   }
@@ -3367,6 +3368,7 @@ function initChatEvents() {
   const chatTextarea = document.getElementById("chat-textarea");
   const headerNewChatBtn = document.getElementById("header-new-chat-btn");
   const headerClearChatBtn = document.getElementById("header-clear-chat-btn");
+  const balanceBtn = document.getElementById("openrouter-balance-badge");
 
   if (sendBtn) {
     sendBtn.addEventListener("click", () => {
@@ -3397,6 +3399,12 @@ function initChatEvents() {
           showToast("Chat cleared");
         }
       }
+    });
+  }
+
+  if (balanceBtn) {
+    balanceBtn.addEventListener("click", () => {
+      refreshOpenRouterBalance();
     });
   }
 
@@ -4325,6 +4333,7 @@ async function runAgentCycle() {
     // Capture real usage from OpenRouter so the cost meter is grounded in
     // actuals rather than the chars/4 estimate.
     if (data.usage) recordUsage(data.usage);
+    refreshOpenRouterBalance();
 
     const responseMsg = data.choices[0].message;
 
