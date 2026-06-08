@@ -16,6 +16,7 @@ let settings = {
     apiUrl: "",
     apiKey: ""
   },
+  toolAccess: {},
   networkCapture: {
     autoCaptureLatchedTab: false,
     persistSessionLogs: true,
@@ -48,9 +49,10 @@ let uploadedImages = [];   // Stores Base64 data URLs for screenshots to be sent
 let isAgentRunning = false;
 let agentStopRequested = false;
 let agentAbortController = null;
+let activeToolRunStats = null;
 
 const DEFAULT_SYSTEM_PROMPT = `You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
-You can execute actions on the current webpage using your built-in tools (get_dom, take_screenshot, click_element, scroll_page, type_text, run_js, get_active_tab, list_tabs, navigate, get_authenticator_code, list_authenticator_domains). Use them to inspect, analyze, and build web scrapers on behalf of the user.
+You can execute actions on the current webpage using your built-in tools. For browser interaction, prefer take_snapshot first, then use uid-based click_element, fill_element, fill_form, hover_element, press_key, and wait_for. Use get_dom for raw scraping/debugging when the compact snapshot is insufficient.
 If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.
 For debugging API calls and page requests, use get_network_logs first because a settings-enabled hindsight buffer may already exist for the latched tab. If no logs are available, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, failures, and redacted bodies.
 If MCP servers are configured, you also have additional tools prefixed with mcp__ — use those when they are relevant.
@@ -70,6 +72,74 @@ const CONTEXT_PACKING = {
   maxResponseReserve: 24000,
   recentToolResultsInline: 6,
   archiveToolResultTokens: 2000
+};
+
+const TOOL_ACCESS_GROUPS = [
+  {
+    id: "browser",
+    label: "Browser control",
+    tools: [
+      "take_snapshot", "click_element", "fill_element", "fill_form", "type_text",
+      "hover_element", "press_key", "scroll_page", "wait_for", "navigate",
+      "get_active_tab", "list_tabs", "take_screenshot", "get_dom", "run_js", "evaluate_script"
+    ]
+  },
+  {
+    id: "network",
+    label: "Network debugging",
+    tools: ["start_network_capture", "stop_network_capture", "get_network_logs", "get_network_log_detail", "clear_network_logs"]
+  },
+  {
+    id: "workspace",
+    label: "Workspace files",
+    tools: ["write_file", "read_file", "list_files", "search_files", "read_context_item", "get_file_info", "rename_file", "delete_file"]
+  },
+  {
+    id: "auth",
+    label: "Authenticator",
+    tools: ["get_authenticator_code", "list_authenticator_domains"]
+  }
+];
+
+const DEFAULT_ENABLED_TOOLS = new Set(TOOL_ACCESS_GROUPS.flatMap(group => group.tools));
+const TOOL_LABELS = {
+  take_snapshot: "Page snapshot",
+  click_element: "Click",
+  fill_element: "Fill field",
+  fill_form: "Fill form",
+  type_text: "Type focused text",
+  hover_element: "Hover",
+  press_key: "Press key",
+  scroll_page: "Scroll",
+  wait_for: "Wait for page state",
+  navigate: "Navigate",
+  get_active_tab: "Active tab",
+  list_tabs: "List tabs",
+  take_screenshot: "Screenshot",
+  get_dom: "Raw DOM",
+  run_js: "Raw JS",
+  evaluate_script: "Evaluate function",
+  start_network_capture: "Start network capture",
+  stop_network_capture: "Stop network capture",
+  get_network_logs: "List network logs",
+  get_network_log_detail: "Network log detail",
+  clear_network_logs: "Clear network logs",
+  write_file: "Write file",
+  read_file: "Read file",
+  list_files: "List files",
+  search_files: "Search files",
+  read_context_item: "Read archived context",
+  get_file_info: "File info",
+  rename_file: "Rename file",
+  delete_file: "Delete file",
+  get_authenticator_code: "Authenticator code",
+  list_authenticator_domains: "Authenticator domains"
+};
+
+const TOOL_LOOP_LIMITS = {
+  sameFailure: 2,
+  browserToolsWithoutAssistant: 14,
+  repeatedReadOnly: 3
 };
 
 const EYE_ICON = `
@@ -123,8 +193,22 @@ const BROWSER_TOOLS = [
   {
     type: "function",
     function: {
+      name: "take_snapshot",
+      description: "Take a compact accessibility-style page snapshot with stable element uids for reliable interaction. Prefer this before clicking or filling elements. Use the latest snapshot because uids can become stale after page changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          verbose: { type: "boolean", description: "Include more non-interactive elements. Defaults to false." },
+          limit: { type: "number", description: "Maximum elements to return. Defaults to 80." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "get_dom",
-      description: "Retrieve the text body content and truncated HTML DOM representation of the current active webpage.",
+      description: "Retrieve raw text body content and truncated HTML DOM. Use this for scraping/debugging when take_snapshot is insufficient; prefer take_snapshot for interaction.",
       parameters: { type: "object", properties: {} }
     }
   },
@@ -140,13 +224,58 @@ const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "click_element",
-      description: "Perform a mouse click on a page element using its CSS selector.",
+      description: "Click a page element. Prefer uid from take_snapshot. Selector is supported as a fallback. Set include_snapshot to true after actions that should change page state.",
       parameters: {
         type: "object",
         properties: {
-          selector: { type: "string", description: "The CSS selector of the target element to click." }
+          uid: { type: "string", description: "Element uid from the latest take_snapshot result." },
+          selector: { type: "string", description: "Fallback CSS selector of the target element." },
+          dblClick: { type: "boolean", description: "Double click the target. Defaults to false." },
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "fill_element",
+      description: "Set the value of an input, textarea, select, checkbox, or radio element. Prefer uid from take_snapshot; selector is a fallback.",
+      parameters: {
+        type: "object",
+        properties: {
+          uid: { type: "string", description: "Element uid from the latest take_snapshot result." },
+          selector: { type: "string", description: "Fallback CSS selector of the target control." },
+          value: { type: "string", description: "Value to enter. Use true/false for checkboxes and radio controls." },
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
         },
-        required: ["selector"]
+        required: ["value"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "fill_form",
+      description: "Fill multiple form fields in one call. Prefer this over several fill_element calls because it is faster, more reliable, and reduces turn count.",
+      parameters: {
+        type: "object",
+        properties: {
+          elements: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                uid: { type: "string", description: "Element uid from take_snapshot." },
+                selector: { type: "string", description: "Fallback CSS selector." },
+                value: { type: "string", description: "Value to enter." }
+              },
+              required: ["value"]
+            }
+          },
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
+        },
+        required: ["elements"]
       }
     }
   },
@@ -169,14 +298,64 @@ const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "type_text",
-      description: "Type text into a designated input element on the page.",
+      description: "Type text into a designated input element or the currently focused field. Prefer fill_element/fill_form for normal forms.",
       parameters: {
         type: "object",
         properties: {
-          selector: { type: "string", description: "The CSS selector of the input element." },
-          text: { type: "string", description: "The text value to enter." }
+          uid: { type: "string", description: "Optional element uid from take_snapshot." },
+          selector: { type: "string", description: "Optional fallback CSS selector of the input element." },
+          text: { type: "string", description: "The text value to type." },
+          submitKey: { type: "string", description: "Optional key to press after typing, e.g. Enter, Tab, Escape." },
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
         },
-        required: ["selector", "text"]
+        required: ["text"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "hover_element",
+      description: "Hover over a page element. Prefer uid from take_snapshot; selector is a fallback.",
+      parameters: {
+        type: "object",
+        properties: {
+          uid: { type: "string", description: "Element uid from the latest take_snapshot result." },
+          selector: { type: "string", description: "Fallback CSS selector." },
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "press_key",
+      description: "Press a key or key combination such as Enter, Tab, Escape, Control+A, or Control+Shift+R. Use this for keyboard shortcuts or submitting focused inputs.",
+      parameters: {
+        type: "object",
+        properties: {
+          key: { type: "string", description: "Key or key combination to press." },
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
+        },
+        required: ["key"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "wait_for",
+      description: "Wait for page state after navigation or interaction. Use this instead of repeatedly polling get_dom/take_snapshot.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Text that should appear on the page." },
+          selector: { type: "string", description: "CSS selector that should appear." },
+          url_contains: { type: "string", description: "Substring expected in the current URL." },
+          timeout: { type: "number", description: "Maximum wait time in milliseconds. Defaults to 8000." },
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to true on success." }
+        }
       }
     }
   },
@@ -184,7 +363,7 @@ const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "run_js",
-      description: "Execute arbitrary Javascript in the webpage context and retrieve the return result.",
+      description: "Execute arbitrary Javascript expression/source in the webpage context. Prefer evaluate_script for normal scripts because it avoids top-level return syntax errors.",
       parameters: {
         type: "object",
         properties: {
@@ -230,6 +409,25 @@ const BROWSER_TOOLS = [
       name: "start_network_capture",
       description: "Start recording HTTP/network requests on the active tab. Use this when get_network_logs has no hindsight buffer yet, then reload or interact with the page.",
       parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "evaluate_script",
+      description: "Evaluate a JavaScript function in the page context and return a JSON-serializable result. Example function: \"() => document.title\" or \"(selector) => document.querySelector(selector)?.innerText\".",
+      parameters: {
+        type: "object",
+        properties: {
+          function: { type: "string", description: "JavaScript function declaration/expression to execute." },
+          args: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional string arguments passed to the function. For complex values, pass JSON strings and parse inside the function."
+          }
+        },
+        required: ["function"]
+      }
     }
   },
   {
@@ -459,6 +657,7 @@ async function init() {
     initProviderRoutingSettings();
     initMcpSettings();
     initMcpBridgeSettings();
+    initToolAccessSettings();
     initAuthManualKeySettings();
     initChatEvents();
     initUploadEvents();
@@ -478,7 +677,7 @@ async function init() {
 // ----------------------------------------------------
 async function loadSettings() {
   try {
-    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "networkCapture", "providerRouting", "reasoning", "authManualKeys"]);
+    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "toolAccess", "networkCapture", "providerRouting", "reasoning", "authManualKeys"]);
     settings.apiKey = result.apiKey || "";
     settings.model = result.model || "anthropic/claude-3.5-sonnet";
     if (settings.model === "custom" && result.customModel) {
@@ -488,6 +687,7 @@ async function loadSettings() {
     settings.mcpServers = Array.isArray(result.mcpServers) ? result.mcpServers : [];
     settings.mcpBridge = normalizeMcpBridgeSettings(result.mcpBridge);
     settings.tempEmail = normalizeTempEmailSettings(result.tempEmail);
+    settings.toolAccess = normalizeToolAccessSettings(result.toolAccess);
     settings.networkCapture = normalizeNetworkCaptureSettings(result.networkCapture);
     settings.providerRouting = normalizeProviderRoutingSettings(result.providerRouting);
     settings.reasoning = normalizeReasoningSettings(result.reasoning);
@@ -500,6 +700,7 @@ async function loadSettings() {
     renderMcpServersList();
     renderMcpBridgeSettings();
     renderTempEmailSettings();
+    renderToolAccessSettings();
     renderNetworkCaptureSettings();
     renderProviderRoutingSettings();
     renderReasoningSettings();
@@ -886,7 +1087,7 @@ function computeContextBreakdown() {
   const breakdown = { system: 0, browserTools: 0, mcpTools: 0, chat: 0, toolIO: 0, images: 0 };
 
   breakdown.system += approxTokens(getEffectiveSystemPrompt());
-  breakdown.browserTools += approxTokens([...BROWSER_TOOLS, ...WORKSPACE_TOOLS]);
+  breakdown.browserTools += approxTokens([...filterEnabledToolSchemas(BROWSER_TOOLS), ...filterEnabledToolSchemas(WORKSPACE_TOOLS)]);
   const mcpTools = getMcpToolSchemas();
   if (mcpTools.length > 0) breakdown.mcpTools += approxTokens(mcpTools);
 
@@ -1310,6 +1511,7 @@ if (settingsForm) {
       settings.mcpServers = collectMcpServersFromUI();
       settings.mcpBridge = collectMcpBridgeFromUI();
       settings.tempEmail = collectTempEmailFromUI();
+      settings.toolAccess = collectToolAccessFromUI();
       settings.networkCapture = collectNetworkCaptureFromUI();
       settings.providerRouting = collectProviderRoutingFromUI();
       settings.reasoning = collectReasoningFromUI();
@@ -1322,6 +1524,7 @@ if (settingsForm) {
         mcpServers: settings.mcpServers,
         mcpBridge: settings.mcpBridge,
         tempEmail: settings.tempEmail,
+        toolAccess: settings.toolAccess,
         networkCapture: settings.networkCapture,
         providerRouting: settings.providerRouting,
         reasoning: settings.reasoning,
@@ -1412,12 +1615,18 @@ function beginAgentRun() {
   isAgentRunning = true;
   agentStopRequested = false;
   agentAbortController = new AbortController();
+  activeToolRunStats = {
+    failures: {},
+    readOnlyCalls: {},
+    browserToolCount: 0
+  };
   setSendButtonMode("stop");
 }
 
 function endAgentRun() {
   isAgentRunning = false;
   agentAbortController = null;
+  activeToolRunStats = null;
   setSendButtonMode("send");
 }
 
@@ -2316,6 +2525,106 @@ function collectTempEmailFromUI() {
   });
 }
 
+function normalizeToolAccessSettings(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  const enabled = value.enabled && typeof value.enabled === "object" ? value.enabled : {};
+  const normalized = {};
+  DEFAULT_ENABLED_TOOLS.forEach((toolName) => {
+    normalized[toolName] = enabled[toolName] !== false;
+  });
+  return { enabled: normalized };
+}
+
+function isBuiltInToolEnabled(toolName) {
+  const access = normalizeToolAccessSettings(settings.toolAccess);
+  return access.enabled[toolName] !== false;
+}
+
+function getEnabledBuiltInToolNames() {
+  const access = normalizeToolAccessSettings(settings.toolAccess);
+  return Object.entries(access.enabled)
+    .filter(([, enabled]) => enabled !== false)
+    .map(([name]) => name);
+}
+
+function renderToolAccessSettings() {
+  const list = document.getElementById("tool-access-list");
+  const badge = document.getElementById("tool-access-status-badge");
+  if (!list) return;
+
+  const access = normalizeToolAccessSettings(settings.toolAccess);
+  list.innerHTML = "";
+
+  TOOL_ACCESS_GROUPS.forEach((group) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "tool-access-group";
+    const enabledCount = group.tools.filter((name) => access.enabled[name] !== false).length;
+    wrapper.innerHTML = `
+      <div class="tool-access-group-header">
+        <span>${escapeHtml(group.label)}</span>
+        <span>${enabledCount}/${group.tools.length}</span>
+      </div>
+      <div class="tool-access-grid"></div>
+    `;
+    const grid = wrapper.querySelector(".tool-access-grid");
+    group.tools.forEach((toolName) => {
+      const label = document.createElement("label");
+      label.className = "tool-access-toggle";
+      label.innerHTML = `
+        <input type="checkbox" class="tool-access-input" data-tool-name="${escapeHtml(toolName)}"${access.enabled[toolName] !== false ? " checked" : ""}>
+        <span>${escapeHtml(TOOL_LABELS[toolName] || toolName)}</span>
+      `;
+      grid.appendChild(label);
+    });
+    list.appendChild(wrapper);
+  });
+
+  if (badge) {
+    const total = DEFAULT_ENABLED_TOOLS.size;
+    const enabled = getEnabledBuiltInToolNames().length;
+    badge.textContent = enabled === total ? "All on" : `${enabled}/${total} on`;
+    badge.className = enabled === total ? "mcp-bridge-badge connected" : "mcp-bridge-badge pending";
+  }
+}
+
+function collectToolAccessFromUI() {
+  const list = document.getElementById("tool-access-list");
+  if (!list) return normalizeToolAccessSettings(settings.toolAccess);
+  const enabled = {};
+  DEFAULT_ENABLED_TOOLS.forEach((toolName) => {
+    const input = list.querySelector(`.tool-access-input[data-tool-name="${CSS.escape(toolName)}"]`);
+    enabled[toolName] = input ? input.checked === true : true;
+  });
+  return normalizeToolAccessSettings({ enabled });
+}
+
+function initToolAccessSettings() {
+  const enableAllBtn = document.getElementById("enable-all-tools-btn");
+  const disableRiskyBtn = document.getElementById("disable-risky-tools-btn");
+  const list = document.getElementById("tool-access-list");
+
+  enableAllBtn?.addEventListener("click", () => {
+    list?.querySelectorAll(".tool-access-input").forEach((input) => { input.checked = true; });
+    settings.toolAccess = collectToolAccessFromUI();
+    renderToolAccessSettings();
+  });
+
+  disableRiskyBtn?.addEventListener("click", () => {
+    const risky = new Set(["run_js", "evaluate_script", "navigate", "get_authenticator_code", "delete_file", "rename_file", "clear_network_logs"]);
+    list?.querySelectorAll(".tool-access-input").forEach((input) => {
+      if (risky.has(input.dataset.toolName)) input.checked = false;
+    });
+    settings.toolAccess = collectToolAccessFromUI();
+    renderToolAccessSettings();
+  });
+
+  list?.addEventListener("change", (event) => {
+    if (!event.target?.classList?.contains("tool-access-input")) return;
+    settings.toolAccess = collectToolAccessFromUI();
+    renderToolAccessSettings();
+  });
+}
+
 function normalizeNetworkCaptureSettings(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
   return {
@@ -2729,8 +3038,16 @@ function getMcpToolSchemas() {
   return schemas;
 }
 
+function filterEnabledToolSchemas(tools) {
+  return tools.filter((tool) => isBuiltInToolEnabled(tool.function?.name));
+}
+
 function getAllAgentTools() {
-  return [...BROWSER_TOOLS, ...WORKSPACE_TOOLS, ...getMcpToolSchemas()];
+  return [
+    ...filterEnabledToolSchemas(BROWSER_TOOLS),
+    ...filterEnabledToolSchemas(WORKSPACE_TOOLS),
+    ...getMcpToolSchemas()
+  ];
 }
 
 function inferLanguageFromPath(path, fallback = "text") {
@@ -2953,10 +3270,93 @@ async function executeTool(name, args = {}) {
   if (parseMcpToolName(name)) {
     return executeMcpTool(name, args);
   }
+  if (DEFAULT_ENABLED_TOOLS.has(name) && !isBuiltInToolEnabled(name)) {
+    return JSON.stringify({
+      ok: false,
+      tool: name,
+      error_code: "tool_disabled",
+      recoverable: false,
+      message: `Tool "${name}" is disabled in ScrapeFlow Tool Access settings.`
+    }, null, 2);
+  }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
     return executeWorkspaceTool(name, args);
   }
   return executePageToolViaBackground(name, args);
+}
+
+function parseToolResultObject(result) {
+  if (result && typeof result === "object" && !result.screenshot && result.type !== "file") return result;
+  if (typeof result !== "string") return null;
+  try {
+    const parsed = JSON.parse(result);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function stableToolArgsKey(args = {}) {
+  try {
+    return JSON.stringify(args, Object.keys(args || {}).sort());
+  } catch {
+    return String(args);
+  }
+}
+
+function evaluateToolLoopGuard(toolName, toolArgs, result) {
+  if (!activeToolRunStats || !DEFAULT_ENABLED_TOOLS.has(toolName)) return null;
+  const parsed = parseToolResultObject(result);
+  const failed = parsed?.ok === false || (typeof result === "string" && result.startsWith("Error:"));
+
+  const browserToolNames = new Set(BROWSER_TOOLS.map((tool) => tool.function.name));
+  if (browserToolNames.has(toolName)) {
+    activeToolRunStats.browserToolCount += 1;
+    if (activeToolRunStats.browserToolCount > TOOL_LOOP_LIMITS.browserToolsWithoutAssistant) {
+      return {
+        ok: false,
+        tool: toolName,
+        error_code: "tool_loop_limit",
+        recoverable: false,
+        message: `Stopped tool loop after ${activeToolRunStats.browserToolCount} browser tool calls without an assistant response. Summarize progress or ask the user before continuing.`
+      };
+    }
+  }
+
+  const readOnly = new Set(["get_dom", "take_snapshot"]);
+  if (!readOnly.has(toolName) && !failed) {
+    activeToolRunStats.readOnlyCalls = {};
+  }
+  if (readOnly.has(toolName)) {
+    const key = toolName;
+    activeToolRunStats.readOnlyCalls[key] = (activeToolRunStats.readOnlyCalls[key] || 0) + 1;
+    if (activeToolRunStats.readOnlyCalls[key] > TOOL_LOOP_LIMITS.repeatedReadOnly) {
+      return {
+        ok: false,
+        tool: toolName,
+        error_code: "repeated_read_only_tool",
+        recoverable: true,
+        message: `Repeated ${toolName} too many times without acting. Use the latest snapshot, choose a uid, call wait_for, or explain the blocker.`
+      };
+    }
+  }
+
+  if (!failed) return null;
+
+  const failureKey = `${toolName}:${stableToolArgsKey(toolArgs)}`;
+  activeToolRunStats.failures[failureKey] = (activeToolRunStats.failures[failureKey] || 0) + 1;
+  if (activeToolRunStats.failures[failureKey] >= TOOL_LOOP_LIMITS.sameFailure) {
+    return {
+      ok: false,
+      tool: toolName,
+      error_code: "repeated_tool_failure",
+      recoverable: true,
+      message: `The same ${toolName} call with the same arguments already failed ${activeToolRunStats.failures[failureKey]} times. Do not retry it. Refresh with take_snapshot, use a returned candidate uid, or ask the user for clarification.`,
+      data: { previous_result: parsed || String(result).slice(0, 1000) }
+    };
+  }
+
+  return null;
 }
 
 // ----------------------------------------------------
@@ -3964,7 +4364,11 @@ async function runAgentCycle() {
         }
 
         // Run the action
-        const result = await executeTool(toolName, toolArgs);
+        let result = await executeTool(toolName, toolArgs);
+        const loopGuardResult = evaluateToolLoopGuard(toolName, toolArgs, result);
+        if (loopGuardResult) {
+          result = loopGuardResult;
+        }
 
         let finalResultContent = "";
         let screenshotDataUrl = null;
@@ -3990,6 +4394,8 @@ async function runAgentCycle() {
           };
           appendMessageUI("file-artifact", artifact);
           activeChat.messages.push({ role: "file-artifact", content: artifact });
+        } else if (typeof result === "object") {
+          finalResultContent = JSON.stringify(result, null, 2);
         } else {
           finalResultContent = String(result);
         }
