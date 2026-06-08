@@ -353,6 +353,19 @@
 
           <div class="form-group mcp-bridge-section">
             <div class="form-group-header">
+              <label>Tool Access</label>
+              <span id="tool-access-status-badge" class="mcp-bridge-badge">All on</span>
+            </div>
+            <div class="tool-access-actions">
+              <button type="button" id="enable-all-tools-btn" class="text-btn">Enable all</button>
+              <button type="button" id="disable-risky-tools-btn" class="text-btn">Disable risky</button>
+            </div>
+            <div id="tool-access-list" class="tool-access-list"></div>
+            <span class="help-text">Controls which built-in tools ScrapeFlow exposes to the AI and to the local MCP bridge. Disabled tools are hidden from the model.</span>
+          </div>
+
+          <div class="form-group mcp-bridge-section">
+            <div class="form-group-header">
               <label>Network Capture</label>
               <span id="network-capture-status-badge" class="mcp-bridge-badge">Manual</span>
             </div>
