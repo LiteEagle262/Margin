@@ -28,6 +28,7 @@ const pendingCalls = new Map();
 let extensionSocket = null;
 let extensionInfo = null;
 let mcpServer = null;
+let enabledToolNames = null;
 
 function log(message) {
   console.error(`[scrapeflow-mcp] ${message}`);
@@ -70,6 +71,17 @@ async function callExtensionTool(name, args = {}) {
 
 const TOOLS = [
   {
+    name: "take_snapshot",
+    description: "Take a compact accessibility-style page snapshot with element uids for reliable interaction.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        verbose: { type: "boolean", description: "Include more non-interactive elements." },
+        limit: { type: "number", description: "Maximum elements to return." }
+      }
+    }
+  },
+  {
     name: "get_active_tab",
     description: "Get metadata about the currently active browser tab (id, url, title).",
     inputSchema: { type: "object", properties: {} }
@@ -102,13 +114,121 @@ const TOOLS = [
   },
   {
     name: "click_element",
-    description: "Click a page element using a CSS selector.",
+    description: "Click a page element. Prefer uid from take_snapshot; selector is a fallback.",
     inputSchema: {
       type: "object",
       properties: {
-        selector: { type: "string", description: "CSS selector of the element to click." }
+        uid: { type: "string", description: "Element uid from take_snapshot." },
+        selector: { type: "string", description: "CSS selector fallback." },
+        dblClick: { type: "boolean", description: "Double click the target." },
+        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
+      }
+    }
+  },
+  {
+    name: "fill_element",
+    description: "Set the value of an input, textarea, select, checkbox, or radio element. Prefer uid from take_snapshot.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uid: { type: "string", description: "Element uid from take_snapshot." },
+        selector: { type: "string", description: "CSS selector fallback." },
+        value: { type: "string", description: "Value to enter. Use true/false for checkboxes and radios." },
+        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
       },
-      required: ["selector"]
+      required: ["value"]
+    }
+  },
+  {
+    name: "fill_form",
+    description: "Fill multiple form fields in one call. Prefer this over multiple fill_element calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        elements: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              uid: { type: "string" },
+              selector: { type: "string" },
+              value: { type: "string" }
+            },
+            required: ["value"]
+          }
+        },
+        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
+      },
+      required: ["elements"]
+    }
+  },
+  {
+    name: "hover_element",
+    description: "Hover over a page element. Prefer uid from take_snapshot; selector is a fallback.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uid: { type: "string", description: "Element uid from take_snapshot." },
+        selector: { type: "string", description: "CSS selector fallback." },
+        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
+      }
+    }
+  },
+  {
+    name: "press_key",
+    description: "Press a key or key combination such as Enter, Tab, Escape, Control+A, or Control+Shift+R.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "Key or key combination to press." },
+        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
+      },
+      required: ["key"]
+    }
+  },
+  {
+    name: "wait_for",
+    description: "Wait for page state after navigation or interaction.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Text that should appear on the page." },
+        selector: { type: "string", description: "CSS selector that should appear." },
+        url_contains: { type: "string", description: "Substring expected in the current URL." },
+        timeout: { type: "number", description: "Maximum wait time in milliseconds." },
+        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
+      }
+    }
+  },
+  {
+    name: "evaluate_script",
+    description: "Evaluate a JavaScript function in the page context and return a JSON-serializable result.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        function: { type: "string", description: "JavaScript function declaration/expression to execute." },
+        args: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional string arguments passed to the function. For complex values, pass JSON strings and parse inside the function."
+        }
+      },
+      required: ["function"]
+    }
+  },
+  {
+    name: "type_text",
+    description: "Type text into an input element or the focused field. Prefer fill_element/fill_form for normal forms.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uid: { type: "string", description: "Element uid from take_snapshot." },
+        selector: { type: "string", description: "CSS selector fallback." },
+        text: { type: "string", description: "Text to enter." },
+        submitKey: { type: "string", description: "Optional key to press after typing." },
+        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
+      },
+      required: ["text"]
     }
   },
   {
@@ -121,18 +241,6 @@ const TOOLS = [
         amount: { type: "number", description: "Pixels to scroll. Defaults to 500." }
       },
       required: ["direction"]
-    }
-  },
-  {
-    name: "type_text",
-    description: "Type text into an input element on the page.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        selector: { type: "string", description: "CSS selector of the input element." },
-        text: { type: "string", description: "Text to enter." }
-      },
-      required: ["selector", "text"]
     }
   },
   {
@@ -206,8 +314,11 @@ const TOOLS = [
 ];
 
 function visibleTools() {
-  if (isTempEmailEnabled()) return TOOLS;
-  return TOOLS.filter((tool) => !TEMP_EMAIL_TOOL_NAMES.has(tool.name));
+  return TOOLS.filter((tool) => {
+    if (TEMP_EMAIL_TOOL_NAMES.has(tool.name) && !isTempEmailEnabled()) return false;
+    if (enabledToolNames && !TEMP_EMAIL_TOOL_NAMES.has(tool.name) && !enabledToolNames.has(tool.name)) return false;
+    return true;
+  });
 }
 
 function startBridgeServer() {
@@ -261,13 +372,22 @@ function startBridgeServer() {
 
       if (message.type === "feature-flags/set" && message.flags) {
         const tempEmail = message.flags.tempEmail || {};
+        const before = visibleTools().map((tool) => tool.name).join(",");
         const { changed } = setTempEmailFlags({
           enabled: tempEmail.enabled === true,
           apiUrl: typeof tempEmail.apiUrl === "string" ? tempEmail.apiUrl : undefined,
           apiKey: typeof tempEmail.apiKey === "string" ? tempEmail.apiKey : undefined
         });
-        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()})`);
-        if (changed && mcpServer) {
+        const access = message.flags.toolAccess;
+        if (access?.enabled && typeof access.enabled === "object") {
+          const entries = Object.entries(access.enabled);
+          enabledToolNames = entries.length > 0
+            ? new Set(entries.filter(([, enabled]) => enabled !== false).map(([name]) => name))
+            : null;
+        }
+        const after = visibleTools().map((tool) => tool.name).join(",");
+        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, tools=${enabledToolNames ? enabledToolNames.size : "all"})`);
+        if ((changed || before !== after) && mcpServer) {
           mcpServer.notification({ method: "notifications/tools/list_changed" })
             .catch(() => { /* client may not support */ });
         }
@@ -335,6 +455,13 @@ async function main() {
     if (!TOOLS.some(tool => tool.name === name)) {
       return {
         content: [{ type: "text", text: `Unknown tool: ${name}` }],
+        isError: true
+      };
+    }
+
+    if (!visibleTools().some(tool => tool.name === name)) {
+      return {
+        content: [{ type: "text", text: `Tool disabled: ${name}` }],
         isError: true
       };
     }
