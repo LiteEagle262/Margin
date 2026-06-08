@@ -34,6 +34,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   await ensureMcpBridgeDefaults();
   await loadMcpBridgeConfig();
   await loadTempEmailConfig();
+  await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
   chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 });
 });
@@ -41,6 +42,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
   await loadMcpBridgeConfig();
   await loadTempEmailConfig();
+  await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
 });
 
@@ -53,6 +55,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.tempEmail) {
     tempEmailConfig = normalizeTempEmailConfig(changes.tempEmail.newValue);
     sendFeatureFlagsToBridge();
+  }
+  if (changes.networkCapture) {
+    syncNetworkAutoCaptureFromStorage();
   }
 });
 
@@ -129,6 +134,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           windowId: tab.windowId
         };
         await chrome.storage.session.set({ latchedTab: info });
+        await syncNetworkAutoCapture(info);
         sendResponse({ ok: true, tab: info });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });
@@ -140,12 +146,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "latch-tab/clear") {
     (async () => {
       try {
+        await syncNetworkAutoCapture(null);
         await chrome.storage.session.remove("latchedTab");
         sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });
       }
     })();
+    return true;
+  }
+
+  if (message?.type === "network-capture/settings-changed") {
+    syncNetworkAutoCaptureFromStorage().then((result) => {
+      sendResponse({ ok: true, result });
+    }).catch((err) => {
+      sendResponse({ ok: false, error: err.message });
+    });
     return true;
   }
 
@@ -263,6 +279,16 @@ function normalizeTempEmailConfig(raw) {
 async function loadTempEmailConfig() {
   const stored = await chrome.storage.local.get(["tempEmail"]);
   tempEmailConfig = normalizeTempEmailConfig(stored.tempEmail);
+}
+
+async function syncNetworkAutoCaptureFromStorage() {
+  try {
+    const stored = await chrome.storage.session.get(["latchedTab"]);
+    const latched = stored.latchedTab || null;
+    return await syncNetworkAutoCapture(latched);
+  } catch (err) {
+    return `Network auto-capture sync failed: ${err.message}`;
+  }
 }
 
 function sendFeatureFlagsToBridge() {
@@ -427,3 +453,4 @@ loadMcpBridgeConfig().then(() => {
 });
 
 loadTempEmailConfig();
+syncNetworkAutoCaptureFromStorage();
