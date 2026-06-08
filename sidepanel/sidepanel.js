@@ -16,6 +16,12 @@ let settings = {
     apiUrl: "",
     apiKey: ""
   },
+  networkCapture: {
+    autoCaptureLatchedTab: false,
+    persistSessionLogs: true,
+    captureResponseBodies: true,
+    redactSensitiveData: true
+  },
   providerRouting: {
     enabled: false,
     mode: "auto",
@@ -46,7 +52,7 @@ let agentAbortController = null;
 const DEFAULT_SYSTEM_PROMPT = `You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
 You can execute actions on the current webpage using your built-in tools (get_dom, take_screenshot, click_element, scroll_page, type_text, run_js, get_active_tab, list_tabs, navigate, get_authenticator_code, list_authenticator_domains). Use them to inspect, analyze, and build web scrapers on behalf of the user.
 If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.
-For debugging API calls and page requests, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, and response bodies.
+For debugging API calls and page requests, use get_network_logs first because a settings-enabled hindsight buffer may already exist for the latched tab. If no logs are available, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, failures, and redacted bodies.
 If MCP servers are configured, you also have additional tools prefixed with mcp__ — use those when they are relevant.
 
 IMPORTANT — File output rules:
@@ -222,7 +228,7 @@ const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "start_network_capture",
-      description: "Start recording HTTP/network requests on the active tab. Call this before reloading or interacting with the page when debugging API calls or scraper targets.",
+      description: "Start recording HTTP/network requests on the active tab. Use this when get_network_logs has no hindsight buffer yet, then reload or interact with the page.",
       parameters: { type: "object", properties: {} }
     }
   },
@@ -238,7 +244,7 @@ const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "get_network_logs",
-      description: "List captured network requests from the active tab. Filter by URL substring, method, status code, or resource type. Set include_body to true to include request/response bodies (truncated).",
+      description: "List captured network requests from the active or latched tab, including persisted session hindsight when available. Filter by URL substring, method, status code, failed state, or resource type. Set include_body to true to include redacted request/response bodies.",
       parameters: {
         type: "object",
         properties: {
@@ -246,8 +252,9 @@ const BROWSER_TOOLS = [
           method: { type: "string", description: "Filter by HTTP method, e.g. GET or POST." },
           status: { type: "number", description: "Filter by HTTP status code, e.g. 200 or 404." },
           type: { type: "string", description: "Filter by resource type, e.g. XHR, Fetch, Document, Script." },
+          failed: { type: "boolean", description: "Filter to failed requests when true, or successful/non-failed requests when false." },
           limit: { type: "number", description: "Max entries to return. Defaults to 50." },
-          include_body: { type: "boolean", description: "Include request/response bodies in results. Defaults to false." }
+          include_body: { type: "boolean", description: "Include redacted request/response bodies in results. Defaults to false." }
         }
       }
     }
@@ -256,7 +263,7 @@ const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "get_network_log_detail",
-      description: "Get full details for a single network request including headers and response body. Use the request id from get_network_logs.",
+      description: "Get full details for a single network request including redacted headers and response body. Use the request id from get_network_logs.",
       parameters: {
         type: "object",
         properties: {
@@ -471,7 +478,7 @@ async function init() {
 // ----------------------------------------------------
 async function loadSettings() {
   try {
-    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "providerRouting", "reasoning", "authManualKeys"]);
+    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "networkCapture", "providerRouting", "reasoning", "authManualKeys"]);
     settings.apiKey = result.apiKey || "";
     settings.model = result.model || "anthropic/claude-3.5-sonnet";
     if (settings.model === "custom" && result.customModel) {
@@ -481,6 +488,7 @@ async function loadSettings() {
     settings.mcpServers = Array.isArray(result.mcpServers) ? result.mcpServers : [];
     settings.mcpBridge = normalizeMcpBridgeSettings(result.mcpBridge);
     settings.tempEmail = normalizeTempEmailSettings(result.tempEmail);
+    settings.networkCapture = normalizeNetworkCaptureSettings(result.networkCapture);
     settings.providerRouting = normalizeProviderRoutingSettings(result.providerRouting);
     settings.reasoning = normalizeReasoningSettings(result.reasoning);
     settings.authManualKeys = normalizeAuthManualKeys(result.authManualKeys);
@@ -492,6 +500,7 @@ async function loadSettings() {
     renderMcpServersList();
     renderMcpBridgeSettings();
     renderTempEmailSettings();
+    renderNetworkCaptureSettings();
     renderProviderRoutingSettings();
     renderReasoningSettings();
     renderAuthManualKeys();
@@ -1301,6 +1310,7 @@ if (settingsForm) {
       settings.mcpServers = collectMcpServersFromUI();
       settings.mcpBridge = collectMcpBridgeFromUI();
       settings.tempEmail = collectTempEmailFromUI();
+      settings.networkCapture = collectNetworkCaptureFromUI();
       settings.providerRouting = collectProviderRoutingFromUI();
       settings.reasoning = collectReasoningFromUI();
       settings.authManualKeys = collectAuthManualKeysFromUI();
@@ -1312,6 +1322,7 @@ if (settingsForm) {
         mcpServers: settings.mcpServers,
         mcpBridge: settings.mcpBridge,
         tempEmail: settings.tempEmail,
+        networkCapture: settings.networkCapture,
         providerRouting: settings.providerRouting,
         reasoning: settings.reasoning,
         authManualKeys: settings.authManualKeys
@@ -1319,6 +1330,7 @@ if (settingsForm) {
       await refreshMcpTools();
       chrome.runtime.sendMessage({ type: "mcp-bridge/reconnect" });
       chrome.runtime.sendMessage({ type: "mcp-bridge/feature-flags-changed" });
+      chrome.runtime.sendMessage({ type: "network-capture/settings-changed" });
       updateModelBadge();
       refreshOpenRouterBalance();
       showToast("Settings saved successfully!");
@@ -2301,6 +2313,49 @@ function collectTempEmailFromUI() {
     enabled: enabledInput ? enabledInput.checked : settings.tempEmail.enabled,
     apiUrl: urlInput ? urlInput.value : settings.tempEmail.apiUrl,
     apiKey: keyInput ? keyInput.value : settings.tempEmail.apiKey
+  });
+}
+
+function normalizeNetworkCaptureSettings(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  return {
+    autoCaptureLatchedTab: value.autoCaptureLatchedTab === true,
+    persistSessionLogs: value.persistSessionLogs !== false,
+    captureResponseBodies: value.captureResponseBodies !== false,
+    redactSensitiveData: value.redactSensitiveData !== false
+  };
+}
+
+function renderNetworkCaptureSettings() {
+  const autoInput = document.getElementById("network-auto-capture-latched");
+  const persistInput = document.getElementById("network-persist-session");
+  const bodiesInput = document.getElementById("network-capture-bodies");
+  const redactInput = document.getElementById("network-redact-sensitive");
+  const badge = document.getElementById("network-capture-status-badge");
+
+  const capture = normalizeNetworkCaptureSettings(settings.networkCapture);
+  if (autoInput) autoInput.checked = capture.autoCaptureLatchedTab === true;
+  if (persistInput) persistInput.checked = capture.persistSessionLogs === true;
+  if (bodiesInput) bodiesInput.checked = capture.captureResponseBodies === true;
+  if (redactInput) redactInput.checked = capture.redactSensitiveData === true;
+
+  if (badge) {
+    badge.textContent = capture.autoCaptureLatchedTab ? "Latched tab" : "Manual";
+    badge.className = capture.autoCaptureLatchedTab ? "mcp-bridge-badge connected" : "mcp-bridge-badge";
+  }
+}
+
+function collectNetworkCaptureFromUI() {
+  const autoInput = document.getElementById("network-auto-capture-latched");
+  const persistInput = document.getElementById("network-persist-session");
+  const bodiesInput = document.getElementById("network-capture-bodies");
+  const redactInput = document.getElementById("network-redact-sensitive");
+
+  return normalizeNetworkCaptureSettings({
+    autoCaptureLatchedTab: autoInput ? autoInput.checked : settings.networkCapture.autoCaptureLatchedTab,
+    persistSessionLogs: persistInput ? persistInput.checked : settings.networkCapture.persistSessionLogs,
+    captureResponseBodies: bodiesInput ? bodiesInput.checked : settings.networkCapture.captureResponseBodies,
+    redactSensitiveData: redactInput ? redactInput.checked : settings.networkCapture.redactSensitiveData
   });
 }
 

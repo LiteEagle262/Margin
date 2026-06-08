@@ -353,6 +353,30 @@
 
           <div class="form-group mcp-bridge-section">
             <div class="form-group-header">
+              <label>Network Capture</label>
+              <span id="network-capture-status-badge" class="mcp-bridge-badge">Manual</span>
+            </div>
+            <label class="mcp-bridge-toggle">
+              <input type="checkbox" id="network-auto-capture-latched">
+              Automatically keep a hindsight buffer for the latched tab
+            </label>
+            <label class="mcp-bridge-toggle">
+              <input type="checkbox" id="network-persist-session">
+              Keep captured logs across chats during this browser session
+            </label>
+            <label class="mcp-bridge-toggle">
+              <input type="checkbox" id="network-capture-bodies">
+              Capture text and JSON response bodies
+            </label>
+            <label class="mcp-bridge-toggle">
+              <input type="checkbox" id="network-redact-sensitive">
+              Redact cookies, auth headers, tokens, and common secret fields
+            </label>
+            <span class="help-text">Auto-capture attaches Chrome DevTools Protocol only to the latched tab. Logs are a rolling session buffer, not a global recorder.</span>
+          </div>
+
+          <div class="form-group mcp-bridge-section">
+            <div class="form-group-header">
               <label>Authenticator Manual Keys</label>
               <span id="auth-manual-keys-badge" class="mcp-bridge-badge">None</span>
             </div>
@@ -381,7 +405,7 @@
             <textarea id="system-prompt" rows="8">You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
 You can execute actions on the current webpage using your built-in tools (get_dom, take_screenshot, click_element, scroll_page, type_text, run_js, get_active_tab, list_tabs, navigate, get_authenticator_code, list_authenticator_domains). Use them to inspect, analyze, and build web scrapers on behalf of the user.
 If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.
-For debugging API calls and page requests, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, and response bodies.
+For debugging API calls and page requests, use get_network_logs first because a settings-enabled hindsight buffer may already exist for the latched tab. If no logs are available, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, failures, and redacted bodies.
 If MCP servers are configured, you also have additional tools prefixed with mcp__ — use those when they are relevant.
 
 IMPORTANT — File output rules:
