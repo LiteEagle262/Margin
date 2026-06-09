@@ -57,6 +57,15 @@
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
         </button>
+
+        <!-- Export Chat Button -->
+        <button id="header-export-chat-btn" class="header-icon-btn" title="Export Current Chat for AI Context" aria-label="Export current chat for AI context">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.25" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </button>
         
         <!-- Clear Chat Button -->
         <button id="header-clear-chat-btn" class="header-icon-btn" title="Clear Current Chat">
@@ -426,6 +435,23 @@ IMPORTANT — File output rules:
 - ALWAYS use write_file to save scripts, configs, and other files. The user gets a compact file card they can click to view and copy.
 - Files are saved to a persistent workspace shared across chats. Use list_files for an overview, search_files to find files by name or content, get_file_info for metadata, read_file to load contents, rename_file and delete_file to manage files.
 - After write_file, give a brief explanation only — do not repeat the file contents.</textarea>
+          </div>
+
+          <div class="form-group workspace-export-section">
+            <div class="form-group-header">
+              <label>Workspace Export</label>
+              <button type="button" id="export-global-workspace-btn" class="text-btn">Export Global Workspace</button>
+            </div>
+            <span class="help-text">Exports the persistent workspace shared across chats. Current chat raw exports only include the selected chat.</span>
+          </div>
+
+          <div class="form-group chat-import-section">
+            <div class="form-group-header">
+              <label>Chat Import</label>
+              <button type="button" id="import-chat-raw-btn" class="text-btn">Import Raw Chat</button>
+            </div>
+            <input type="file" id="import-chat-raw-input" class="hidden" accept="application/json,.json">
+            <span class="help-text">Imports a <code>scrapeflow-chat-raw.json</code> export as a real chat session, switches to it, and renders the conversation visually.</span>
           </div>
 
           <div class="settings-actions">
