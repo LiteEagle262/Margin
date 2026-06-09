@@ -30,7 +30,9 @@ let settings = {
     allowFallbacks: true
   },
   reasoning: {
-    effort: "auto"
+    effort: "auto",
+    showThinking: false,
+    keepThinkingOpen: false
   },
   authManualKeys: {}
 };
@@ -1338,7 +1340,7 @@ function buildModelMessageBlocks(activeChat) {
 
   for (let i = 0; i < activeChat.messages.length; i++) {
     const msg = activeChat.messages[i];
-    if (!msg || msg.role === "tool-status" || msg.role === "file-artifact") continue;
+    if (!msg || msg.role === "tool-status" || msg.role === "file-artifact" || msg.role === "reasoning") continue;
 
     if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
       const blockMessages = [formatStoredMessageForModel(msg, inlineToolCallIds)];
@@ -1346,7 +1348,7 @@ function buildModelMessageBlocks(activeChat) {
       let j = i + 1;
       while (j < activeChat.messages.length) {
         const next = activeChat.messages[j];
-        if (next?.role === "tool-status" || next?.role === "file-artifact") {
+        if (next?.role === "tool-status" || next?.role === "file-artifact" || next?.role === "reasoning") {
           j++;
           continue;
         }
@@ -2704,6 +2706,18 @@ function updateModelBadge() {
   updateUsageBar();
 }
 
+async function setThinkingOpenDefault(keepThinkingOpen) {
+  settings = normalizeAppConfig({
+    ...settings,
+    reasoning: {
+      ...settings.reasoning,
+      keepThinkingOpen
+    }
+  });
+  await persistSettings(settings);
+  renderChatHistory();
+}
+
 function setOpenRouterBalanceBadge(text, { state = "", title = "OpenRouter balance" } = {}) {
   const badge = document.getElementById("openrouter-balance-badge");
   if (!badge) return;
@@ -3082,28 +3096,36 @@ const REASONING_EFFORTS = new Set(["auto", "none", "minimal", "low", "medium", "
 function normalizeReasoningSettings(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
   return {
-    effort: REASONING_EFFORTS.has(value.effort) ? value.effort : "auto"
+    effort: REASONING_EFFORTS.has(value.effort) ? value.effort : "auto",
+    showThinking: value.showThinking === true,
+    keepThinkingOpen: value.keepThinkingOpen === true
   };
 }
 
 function collectReasoningFromUI() {
   const effortInput = document.getElementById("reasoning-effort");
+  const showThinkingInput = document.getElementById("reasoning-show-thinking");
   return normalizeReasoningSettings({
-    effort: effortInput ? effortInput.value : settings.reasoning.effort
+    effort: effortInput ? effortInput.value : settings.reasoning.effort,
+    showThinking: showThinkingInput ? showThinkingInput.checked : settings.reasoning.showThinking,
+    keepThinkingOpen: settings.reasoning.keepThinkingOpen
   });
 }
 
 function renderReasoningSettings() {
   const effortInput = document.getElementById("reasoning-effort");
-  if (!effortInput) return;
+  const showThinkingInput = document.getElementById("reasoning-show-thinking");
   const reasoning = normalizeReasoningSettings(settings.reasoning);
-  effortInput.value = reasoning.effort;
+  if (effortInput) effortInput.value = reasoning.effort;
+  if (showThinkingInput) showThinkingInput.checked = reasoning.showThinking;
 }
 
-function buildReasoningPreferences() {
+function buildReasoningPreferences(options = {}) {
   const reasoning = normalizeReasoningSettings(settings.reasoning);
-  if (reasoning.effort === "auto") return null;
-  return { effort: reasoning.effort };
+  const prefs = {};
+  if (reasoning.effort !== "auto") prefs.effort = reasoning.effort;
+  if (options.includeThinkingOutput && reasoning.showThinking) prefs.exclude = false;
+  return Object.keys(prefs).length ? prefs : null;
 }
 
 const PROVIDER_ROUTING_MODES = new Set(["auto", "ordered", "price", "throughput", "latency"]);
@@ -4609,6 +4631,8 @@ function renderChatHistory() {
         appendMessageUI("tool-status", msg.content, [], false);
       } else if (msg.role === "file-artifact") {
         appendMessageUI("file-artifact", msg.content, [], false);
+      } else if (msg.role === "reasoning") {
+        appendMessageUI("reasoning", msg.content, [], false);
       }
     });
   }
@@ -4670,6 +4694,17 @@ function appendMessageUI(role, content, attachments = [], shouldScroll = true, o
   if (role === "file-artifact") {
     msgDiv.className = "message file-artifact-msg";
     msgDiv.appendChild(renderFileArtifact(content));
+    chatHistory.appendChild(msgDiv);
+    if (shouldScroll) {
+      chatHistory.scrollTop = chatHistory.scrollHeight;
+      updateUsageBar();
+    }
+    return;
+  }
+
+  if (role === "reasoning") {
+    msgDiv.className = "message reasoning-msg";
+    msgDiv.appendChild(renderReasoningDisclosure(content));
     chatHistory.appendChild(msgDiv);
     if (shouldScroll) {
       chatHistory.scrollTop = chatHistory.scrollHeight;
@@ -5142,6 +5177,108 @@ function renderToolStatus(content) {
   return card;
 }
 
+function extractReasoningText(message) {
+  if (!message || typeof message !== "object") return "";
+  const candidates = [
+    message.reasoning,
+    message.reasoning_content,
+    message.thinking,
+    message.thinking_content
+  ];
+
+  if (Array.isArray(message.reasoning_details)) {
+    candidates.push(message.reasoning_details);
+  }
+  if (Array.isArray(message.reasoningDetails)) {
+    candidates.push(message.reasoningDetails);
+  }
+
+  const parts = [];
+  candidates.forEach((candidate) => {
+    if (!candidate) return;
+    if (typeof candidate === "string") {
+      const trimmed = candidate.trim();
+      if (trimmed) parts.push(trimmed);
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      candidate.forEach((item) => {
+        if (!item) return;
+        if (typeof item === "string") {
+          const trimmed = item.trim();
+          if (trimmed) parts.push(trimmed);
+          return;
+        }
+        if (typeof item === "object") {
+          const text = item.text || item.content || item.reasoning || item.summary;
+          if (typeof text === "string" && text.trim()) {
+            parts.push(text.trim());
+          }
+        }
+      });
+      return;
+    }
+    if (typeof candidate === "object") {
+      const text = candidate.text || candidate.content || candidate.reasoning || candidate.summary;
+      if (typeof text === "string" && text.trim()) {
+        parts.push(text.trim());
+      }
+    }
+  });
+
+  return [...new Set(parts)].join("\n\n").trim();
+}
+
+function renderReasoningDisclosure(content) {
+  const text = typeof content === "string" ? content.trim() : prettyPrint(content).trim();
+  const expandedByDefault = normalizeReasoningSettings(settings.reasoning).keepThinkingOpen;
+  const wrapper = document.createElement("div");
+  wrapper.className = `message-content reasoning-card${expandedByDefault ? " expanded" : ""}`;
+  wrapper.innerHTML = `
+    <div class="reasoning-header">
+      <button type="button" class="reasoning-toggle" aria-expanded="${expandedByDefault ? "true" : "false"}">
+        <span class="reasoning-title">Thinking</span>
+        <span class="reasoning-meta">${escapeHtml(formatTokens(approxTokens(text)))}</span>
+        <span class="reasoning-chevron" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </span>
+      </button>
+      <button type="button" class="reasoning-all-action" data-action="${expandedByDefault ? "close" : "open"}">
+        ${expandedByDefault ? "Close all" : "Open all"}
+      </button>
+    </div>
+    <div class="reasoning-body${expandedByDefault ? "" : " hidden"}">
+      <div class="markdown message-text">${formatMarkdown(text)}</div>
+    </div>
+  `;
+
+  const toggle = wrapper.querySelector(".reasoning-toggle");
+  const action = wrapper.querySelector(".reasoning-all-action");
+  const body = wrapper.querySelector(".reasoning-body");
+  if (toggle && body) {
+    toggle.addEventListener("click", () => {
+      const expanded = body.classList.toggle("hidden") === false;
+      wrapper.classList.toggle("expanded", expanded);
+      toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+      if (action) {
+        action.dataset.action = expanded ? "close" : "open";
+        action.textContent = expanded ? "Close all" : "Open all";
+      }
+    });
+  }
+  if (action) {
+    action.addEventListener("click", async () => {
+      const shouldOpen = action.dataset.action !== "close";
+      await setThinkingOpenDefault(shouldOpen);
+      showToast(shouldOpen ? "Thinking tabs opened and will stay open" : "Thinking tabs closed");
+    });
+  }
+
+  return wrapper;
+}
+
 function normalizeToolStatus(content) {
   if (content && typeof content === "object") {
     return {
@@ -5385,7 +5522,7 @@ async function runAgentCycle() {
     const apiMessages = buildApiMessagesForChat(activeChat);
 
     const providerPreferences = buildProviderPreferences();
-    const reasoningPreferences = buildReasoningPreferences();
+    const reasoningPreferences = buildReasoningPreferences({ includeThinkingOutput: true });
     const requestBody = {
       model: activeModel,
       messages: apiMessages,
@@ -5399,6 +5536,9 @@ async function runAgentCycle() {
     }
     if (reasoningPreferences) {
       requestBody.reasoning = reasoningPreferences;
+    }
+    if (settings.reasoning.showThinking) {
+      requestBody.include_reasoning = true;
     }
     if (messagesContainFileParts(apiMessages)) {
       requestBody.plugins = [
@@ -5440,6 +5580,12 @@ async function runAgentCycle() {
     refreshOpenRouterBalance();
 
     const responseMsg = data.choices[0].message;
+    const reasoningText = settings.reasoning.showThinking ? extractReasoningText(responseMsg) : "";
+    const appendReasoningIfPresent = () => {
+      if (!reasoningText) return;
+      activeChat.messages.push({ role: "reasoning", content: reasoningText });
+      appendMessageUI("reasoning", reasoningText);
+    };
 
     // 4. Handle Tool execution or standard Assistant responses
     if (responseMsg.tool_calls && responseMsg.tool_calls.length > 0) {
@@ -5449,6 +5595,8 @@ async function runAgentCycle() {
         content: responseMsg.content || "",
         tool_calls: responseMsg.tool_calls
       });
+
+      appendReasoningIfPresent();
 
       // Display text content if assistant returned thoughts along with tool call
       if (responseMsg.content) {
@@ -5562,6 +5710,7 @@ async function runAgentCycle() {
     } else {
       // Regular response from assistant
       const aiReply = responseMsg.content || "";
+      appendReasoningIfPresent();
       const messageIndex = activeChat.messages.push({ role: "assistant", content: aiReply }) - 1;
       appendMessageUI("assistant", aiReply, [], true, { messageIndex });
       await saveChats();
