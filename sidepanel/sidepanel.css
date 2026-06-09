@@ -502,7 +502,8 @@ button {
 }
 
 .message.tool-status,
-.message.tool-activity-group {
+.message.tool-activity-group,
+.message.reasoning-msg {
   width: 100%;
   max-width: 100%;
   align-self: stretch;
@@ -536,6 +537,93 @@ button {
 
 .system-msg .message-content strong {
   color: var(--text);
+}
+
+.reasoning-card {
+  background: var(--bg-field);
+  color: var(--text-soft);
+  padding: 0;
+  overflow: hidden;
+}
+
+.reasoning-card.expanded {
+  border-color: var(--border-strong);
+}
+
+.reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+
+.reasoning-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 9px 0 9px 12px;
+  text-align: left;
+}
+
+.reasoning-toggle:hover,
+.reasoning-all-action:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.reasoning-title {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.reasoning-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.reasoning-chevron {
+  color: var(--text-muted);
+  display: inline-flex;
+  transition: transform 140ms ease;
+}
+
+.reasoning-card.expanded .reasoning-chevron {
+  transform: rotate(180deg);
+}
+
+.reasoning-all-action {
+  flex: 0 0 auto;
+  align-self: stretch;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 10px;
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.reasoning-body {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px 12px;
+}
+
+.reasoning-body.hidden {
+  display: none;
 }
 
 .message-meta {
