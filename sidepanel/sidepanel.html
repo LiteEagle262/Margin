@@ -276,6 +276,11 @@
               <option value="xhigh">X-High</option>
             </select>
             <span class="help-text">Auto leaves model/provider defaults untouched. Higher levels can improve complex tasks but may increase latency and token cost when supported.</span>
+            <label class="mcp-bridge-toggle">
+              <input type="checkbox" id="reasoning-show-thinking">
+              Show returned model thinking in chat
+            </label>
+            <span class="help-text">Experimental. Only appears when the selected model/provider returns reasoning content through OpenRouter.</span>
           </div>
 
           <div class="form-group provider-routing-section">
