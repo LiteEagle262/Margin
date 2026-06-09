@@ -186,16 +186,30 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
+  min-width: 0;
 }
 
-.history-item-delete {
+.history-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.history-item:hover .history-item-actions,
+.history-item.active .history-item-actions,
+.history-item:focus-within .history-item-actions {
+  opacity: 1;
+}
+
+.history-item-action {
   width: 26px;
   height: 26px;
   background: transparent;
   border: 1px solid transparent;
   color: var(--text-faint);
   cursor: pointer;
-  opacity: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -203,8 +217,10 @@ button {
   transition: opacity 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 
-.history-item:hover .history-item-delete {
-  opacity: 1;
+.history-item-action:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--bg-hover);
 }
 
 .history-item-delete:hover {
