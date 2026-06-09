@@ -337,6 +337,16 @@ button {
   color: var(--text);
 }
 
+.header-icon-btn[disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.header-icon-btn.is-busy {
+  color: var(--accent);
+  cursor: wait;
+}
+
 .header-icon-btn.active {
   background: var(--bg-field);
   border-color: var(--border-strong);
@@ -2354,6 +2364,11 @@ button {
 .danger-btn:hover {
   background: color-mix(in oklch, var(--danger), transparent 86%);
   color: var(--text);
+}
+
+.workspace-export-section .text-btn,
+.chat-import-section .text-btn {
+  white-space: nowrap;
 }
 
 .toast {
