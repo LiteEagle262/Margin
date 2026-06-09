@@ -35,6 +35,22 @@ let settings = {
   authManualKeys: {}
 };
 
+const CONFIG_EXPORT_VERSION = 1;
+const SETTINGS_STORAGE_KEYS = [
+  "apiKey",
+  "model",
+  "customModel",
+  "systemPrompt",
+  "mcpServers",
+  "mcpBridge",
+  "tempEmail",
+  "toolAccess",
+  "networkCapture",
+  "providerRouting",
+  "reasoning",
+  "authManualKeys"
+];
+
 let openRouterModels = [];
 let openRouterModelsLoading = false;
 let openRouterEndpoints = [];
@@ -697,39 +713,172 @@ async function init() {
 // ----------------------------------------------------
 async function loadSettings() {
   try {
-    const result = await chrome.storage.local.get(["apiKey", "model", "customModel", "systemPrompt", "mcpServers", "mcpBridge", "tempEmail", "toolAccess", "networkCapture", "providerRouting", "reasoning", "authManualKeys"]);
-    settings.apiKey = result.apiKey || "";
-    settings.model = result.model || "anthropic/claude-3.5-sonnet";
-    if (settings.model === "custom" && result.customModel) {
-      settings.model = result.customModel;
-    }
-    settings.systemPrompt = result.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-    settings.mcpServers = Array.isArray(result.mcpServers) ? result.mcpServers : [];
-    settings.mcpBridge = normalizeMcpBridgeSettings(result.mcpBridge);
-    settings.tempEmail = normalizeTempEmailSettings(result.tempEmail);
-    settings.toolAccess = normalizeToolAccessSettings(result.toolAccess);
-    settings.networkCapture = normalizeNetworkCaptureSettings(result.networkCapture);
-    settings.providerRouting = normalizeProviderRoutingSettings(result.providerRouting);
-    settings.reasoning = normalizeReasoningSettings(result.reasoning);
-    settings.authManualKeys = normalizeAuthManualKeys(result.authManualKeys);
-
-    const apiKeyInput = document.getElementById("openrouter-api-key");
-    if (apiKeyInput) apiKeyInput.value = settings.apiKey;
-
-    syncModelPickerValue();
-    renderMcpServersList();
-    renderMcpBridgeSettings();
-    renderTempEmailSettings();
-    renderToolAccessSettings();
-    renderNetworkCaptureSettings();
-    renderProviderRoutingSettings();
-    renderReasoningSettings();
-    renderAuthManualKeys();
-
-    const systemPromptTextarea = document.getElementById("system-prompt");
-    if (systemPromptTextarea) systemPromptTextarea.value = settings.systemPrompt;
+    const result = await chrome.storage.local.get(SETTINGS_STORAGE_KEYS);
+    settings = normalizeAppConfig(result);
+    renderSettingsFormFromState();
   } catch (e) {
     console.error("Error loading settings:", e);
+  }
+}
+
+function normalizeMcpServers(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(server => server && typeof server === "object")
+    .map(server => ({
+      id: String(server.id || createMcpServerId()),
+      name: String(server.name || "MCP Server"),
+      url: String(server.url || "").trim(),
+      enabled: server.enabled !== false
+    }));
+}
+
+function normalizeAppConfig(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  let model = typeof value.model === "string" && value.model.trim()
+    ? value.model.trim()
+    : "anthropic/claude-3.5-sonnet";
+  if (model === "custom" && typeof value.customModel === "string" && value.customModel.trim()) {
+    model = value.customModel.trim();
+  }
+
+  return {
+    apiKey: typeof value.apiKey === "string" ? value.apiKey.trim() : "",
+    model,
+    systemPrompt: typeof value.systemPrompt === "string" && value.systemPrompt.trim()
+      ? value.systemPrompt.trim()
+      : DEFAULT_SYSTEM_PROMPT,
+    mcpServers: normalizeMcpServers(value.mcpServers),
+    mcpBridge: normalizeMcpBridgeSettings(value.mcpBridge),
+    tempEmail: normalizeTempEmailSettings(value.tempEmail),
+    toolAccess: normalizeToolAccessSettings(value.toolAccess),
+    networkCapture: normalizeNetworkCaptureSettings(value.networkCapture),
+    providerRouting: normalizeProviderRoutingSettings(value.providerRouting),
+    reasoning: normalizeReasoningSettings(value.reasoning),
+    authManualKeys: normalizeAuthManualKeys(value.authManualKeys)
+  };
+}
+
+function buildSettingsStorageObject(config = settings) {
+  const normalized = normalizeAppConfig(config);
+  return {
+    apiKey: normalized.apiKey,
+    model: normalized.model,
+    systemPrompt: normalized.systemPrompt,
+    mcpServers: normalized.mcpServers,
+    mcpBridge: normalized.mcpBridge,
+    tempEmail: normalized.tempEmail,
+    toolAccess: normalized.toolAccess,
+    networkCapture: normalized.networkCapture,
+    providerRouting: normalized.providerRouting,
+    reasoning: normalized.reasoning,
+    authManualKeys: normalized.authManualKeys
+  };
+}
+
+function renderSettingsFormFromState() {
+  const apiKeyInput = document.getElementById("openrouter-api-key");
+  if (apiKeyInput) apiKeyInput.value = settings.apiKey;
+
+  syncModelPickerValue();
+  renderMcpServersList();
+  renderMcpBridgeSettings();
+  renderTempEmailSettings();
+  renderToolAccessSettings();
+  renderNetworkCaptureSettings();
+  renderProviderRoutingSettings();
+  renderReasoningSettings();
+  renderAuthManualKeys();
+
+  const systemPromptTextarea = document.getElementById("system-prompt");
+  if (systemPromptTextarea) systemPromptTextarea.value = settings.systemPrompt;
+}
+
+function collectSettingsFromUI() {
+  const apiKeyInput = document.getElementById("openrouter-api-key");
+  const modelSelectedInput = document.getElementById("model-selected");
+  const modelSearchInput = document.getElementById("model-search");
+  const systemPromptTextarea = document.getElementById("system-prompt");
+
+  const pickedModel = modelSelectedInput ? modelSelectedInput.value.trim() : "";
+  const typedModel = modelSearchInput ? modelSearchInput.value.trim() : "";
+
+  return normalizeAppConfig({
+    ...settings,
+    apiKey: apiKeyInput ? apiKeyInput.value.trim() : settings.apiKey,
+    model: pickedModel || typedModel || settings.model,
+    systemPrompt: systemPromptTextarea ? systemPromptTextarea.value.trim() : settings.systemPrompt,
+    mcpServers: collectMcpServersFromUI(),
+    mcpBridge: collectMcpBridgeFromUI(),
+    tempEmail: collectTempEmailFromUI(),
+    toolAccess: collectToolAccessFromUI(),
+    networkCapture: collectNetworkCaptureFromUI(),
+    providerRouting: collectProviderRoutingFromUI(),
+    reasoning: collectReasoningFromUI(),
+    authManualKeys: collectAuthManualKeysFromUI()
+  });
+}
+
+async function persistSettings(nextSettings = settings) {
+  settings = normalizeAppConfig(nextSettings);
+  await chrome.storage.local.set(buildSettingsStorageObject(settings));
+}
+
+function buildConfigExport(config = settings) {
+  return {
+    exportType: "scrapeflow-config",
+    version: CONFIG_EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    settings: buildSettingsStorageObject(config)
+  };
+}
+
+function unwrapImportedConfig(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Import file is not a JSON object.");
+  }
+  if (raw.exportType && raw.exportType !== "scrapeflow-config") {
+    throw new Error("This is not a ScrapeFlow config export.");
+  }
+  const source = raw.exportType === "scrapeflow-config" ? raw.settings : raw;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    throw new Error("Config export is missing its settings payload.");
+  }
+  return source;
+}
+
+function exportConfig() {
+  try {
+    const exportSettings = collectSettingsFromUI();
+    const rawJson = JSON.stringify(buildConfigExport(exportSettings), null, 2);
+    downloadTextFile("scrapeflow-config.json", rawJson, "application/json;charset=utf-8");
+    showToast("Config exported.");
+  } catch (err) {
+    console.error("Could not export config:", err);
+    showToast("Could not export config: " + (err.message || "unknown error"));
+  }
+}
+
+async function importConfigFile(file) {
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const raw = JSON.parse(text);
+    const importedSettings = normalizeAppConfig(unwrapImportedConfig(raw));
+
+    await persistSettings(importedSettings);
+    renderSettingsFormFromState();
+    await refreshMcpTools();
+    chrome.runtime.sendMessage({ type: "mcp-bridge/reconnect" });
+    chrome.runtime.sendMessage({ type: "mcp-bridge/feature-flags-changed" });
+    chrome.runtime.sendMessage({ type: "network-capture/settings-changed" });
+    updateModelBadge();
+    refreshOpenRouterBalance();
+    showToast("Config imported.");
+  } catch (err) {
+    console.error("Could not import config:", err);
+    showToast("Could not import config: " + (err.message || "invalid file"));
   }
 }
 
@@ -2379,38 +2528,7 @@ if (settingsForm) {
   settingsForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
-      const apiKeyInput = document.getElementById("openrouter-api-key");
-      const modelSelectedInput = document.getElementById("model-selected");
-      const modelSearchInput = document.getElementById("model-search");
-      const systemPromptTextarea = document.getElementById("system-prompt");
-
-      settings.apiKey = apiKeyInput ? apiKeyInput.value.trim() : "";
-      const pickedModel = modelSelectedInput ? modelSelectedInput.value.trim() : "";
-      const typedModel = modelSearchInput ? modelSearchInput.value.trim() : "";
-      settings.model = pickedModel || typedModel || settings.model;
-      settings.systemPrompt = systemPromptTextarea ? systemPromptTextarea.value.trim() : DEFAULT_SYSTEM_PROMPT;
-      settings.mcpServers = collectMcpServersFromUI();
-      settings.mcpBridge = collectMcpBridgeFromUI();
-      settings.tempEmail = collectTempEmailFromUI();
-      settings.toolAccess = collectToolAccessFromUI();
-      settings.networkCapture = collectNetworkCaptureFromUI();
-      settings.providerRouting = collectProviderRoutingFromUI();
-      settings.reasoning = collectReasoningFromUI();
-      settings.authManualKeys = collectAuthManualKeysFromUI();
-
-      await chrome.storage.local.set({
-        apiKey: settings.apiKey,
-        model: settings.model,
-        systemPrompt: settings.systemPrompt,
-        mcpServers: settings.mcpServers,
-        mcpBridge: settings.mcpBridge,
-        tempEmail: settings.tempEmail,
-        toolAccess: settings.toolAccess,
-        networkCapture: settings.networkCapture,
-        providerRouting: settings.providerRouting,
-        reasoning: settings.reasoning,
-        authManualKeys: settings.authManualKeys
-      });
+      await persistSettings(collectSettingsFromUI());
       await refreshMcpTools();
       chrome.runtime.sendMessage({ type: "mcp-bridge/reconnect" });
       chrome.runtime.sendMessage({ type: "mcp-bridge/feature-flags-changed" });
@@ -2452,6 +2570,24 @@ if (resetDataBtn) {
 const exportGlobalWorkspaceBtn = document.getElementById("export-global-workspace-btn");
 if (exportGlobalWorkspaceBtn) {
   exportGlobalWorkspaceBtn.addEventListener("click", exportGlobalWorkspace);
+}
+
+const exportConfigBtn = document.getElementById("export-config-btn");
+if (exportConfigBtn) {
+  exportConfigBtn.addEventListener("click", exportConfig);
+}
+
+const importConfigBtn = document.getElementById("import-config-btn");
+const importConfigInput = document.getElementById("import-config-input");
+if (importConfigBtn && importConfigInput) {
+  importConfigBtn.addEventListener("click", () => {
+    importConfigInput.value = "";
+    importConfigInput.click();
+  });
+  importConfigInput.addEventListener("change", () => {
+    const file = importConfigInput.files?.[0];
+    importConfigFile(file);
+  });
 }
 
 const importChatRawBtn = document.getElementById("import-chat-raw-btn");

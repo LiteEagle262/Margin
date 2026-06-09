@@ -2383,8 +2383,14 @@ button {
 }
 
 .workspace-export-section .text-btn,
+.config-import-export-section .text-btn,
 .chat-import-section .text-btn {
   white-space: nowrap;
+}
+
+.config-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .toast {
