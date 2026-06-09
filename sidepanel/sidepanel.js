@@ -198,6 +198,16 @@ const X_ICON = `
   </svg>
 `;
 
+const SPARKLES_ICON = `
+  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3l1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3z"/>
+    <path d="M5 3v4"/>
+    <path d="M3 5h4"/>
+    <path d="M19 17v4"/>
+    <path d="M17 19h4"/>
+  </svg>
+`;
+
 // Tool schemas declared to OpenRouter
 const BROWSER_TOOLS = [
   {
@@ -1369,10 +1379,14 @@ function updateUsageBar() {
 }
 
 function recordUsage(usage) {
+  recordUsageForChat(usage, currentChatId);
+}
+
+function recordUsageForChat(usage, chatId) {
   // Called after each OpenRouter response. `usage` shape:
   // { prompt_tokens, completion_tokens, total_tokens, cost? }
-  if (!usage || !currentChatId) return;
-  const chat = chats[currentChatId];
+  if (!usage || !chatId) return;
+  const chat = chats[chatId];
   if (!chat) return;
 
   if (!chat.cost) chat.cost = { promptTokens: 0, completionTokens: 0, totalUsd: 0 };
@@ -1391,6 +1405,155 @@ function recordUsage(usage) {
   }
 
   updateUsageBar();
+}
+
+function makeFallbackChatTitle(input, fallback = "Attachment Chat") {
+  const trimmed = String(input || "").replace(/\s+/g, " ").trim();
+  return trimmed ? (trimmed.slice(0, 24) + (trimmed.length > 24 ? "..." : "")) : fallback;
+}
+
+function sanitizeChatTitle(value) {
+  return String(value || "")
+    .replace(/["'`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?:;-]+$/g, "")
+    .trim()
+    .slice(0, 60);
+}
+
+function buildTitleTranscript(chat) {
+  if (!chat || !Array.isArray(chat.messages)) return "";
+
+  const lines = [];
+  for (const msg of chat.messages) {
+    if (!msg || (msg.role !== "user" && msg.role !== "assistant")) continue;
+    if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0 && !String(msg.content || "").trim()) continue;
+
+    const content = String(msg.content || "").replace(/\s+/g, " ").trim();
+    const attachments = getDisplayAttachments(msg)
+      .map(att => att.name || att.filename || att.mimeType || att.kind)
+      .filter(Boolean);
+    const attachmentSuffix = attachments.length ? ` [Attachments: ${attachments.slice(0, 4).join(", ")}]` : "";
+    if (content || attachmentSuffix) {
+      lines.push(`${msg.role === "user" ? "User" : "Assistant"}: ${content}${attachmentSuffix}`.trim());
+    }
+    if (lines.join("\n").length > 6000) break;
+  }
+
+  return lines.join("\n").slice(0, 6000);
+}
+
+async function generateChatTitle(chatId = currentChatId, { silent = false } = {}) {
+  const chat = chats[chatId];
+  if (!chat) return "";
+  if (!settings.apiKey) {
+    if (!silent) {
+      showToast("Add an OpenRouter API key to generate a chat name");
+      switchView("settings");
+    }
+    return "";
+  }
+  if (!settings.model) {
+    if (!silent) showToast("Pick a model before generating a chat name");
+    return "";
+  }
+
+  const transcript = buildTitleTranscript(chat);
+  if (!transcript) {
+    if (!silent) showToast("Add a message before generating a chat name");
+    return "";
+  }
+
+  const requestBody = {
+    model: settings.model,
+    messages: [
+      {
+        role: "system",
+        content: "Name this chat from the user and assistant messages only. Ignore browser/tool activity because it is not included. Return only a concise title, 2 to 6 words, no quotes, no punctuation at the end."
+      },
+      {
+        role: "user",
+        content: transcript
+      }
+    ],
+    temperature: 0.2,
+    max_tokens: 24,
+    usage: { include: true }
+  };
+
+  const providerPreferences = buildProviderPreferences();
+  const reasoningPreferences = buildReasoningPreferences();
+  if (providerPreferences) requestBody.provider = providerPreferences;
+  if (reasoningPreferences) requestBody.reasoning = reasoningPreferences;
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${settings.apiKey}`,
+        "HTTP-Referer": "https://github.com/scrapeflow",
+        "X-Title": "ScrapeFlow Chat Naming"
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`OpenRouter Error (${response.status}): ${errText}`);
+    }
+
+    const data = await response.json();
+    if (data.usage) recordUsageForChat(data.usage, chatId);
+
+    const title = sanitizeChatTitle(data.choices?.[0]?.message?.content);
+    if (!title) throw new Error("No title was returned.");
+
+    chat.title = title;
+    chat.titleMode = "ai";
+    chat.titleGeneratedAt = Date.now();
+    chat.timestamp = Date.now();
+    await saveChats();
+    renderHistoryList();
+    updateUsageBar();
+    refreshOpenRouterBalance();
+    if (!silent) showToast("Chat name generated");
+    return title;
+  } catch (error) {
+    console.error("Error generating chat title:", error);
+    if (!silent) showToast(`Could not generate name: ${error.message}`);
+    return "";
+  }
+}
+
+async function maybeAutoGenerateChatTitle(chatId = currentChatId) {
+  const chat = chats[chatId];
+  if (!chat || chat.titleMode === "manual" || chat.titleMode === "legacy" || chat.titleGeneratedAt || !settings.apiKey) return;
+  const transcript = buildTitleTranscript(chat);
+  if (transcript.length < 20) return;
+  await generateChatTitle(chatId, { silent: true });
+}
+
+async function renameChatManually(chatId = currentChatId) {
+  const chat = chats[chatId];
+  if (!chat) return;
+  const nextTitle = prompt("Rename chat", chat.title || "New Chat");
+  if (nextTitle === null) return;
+
+  const title = sanitizeChatTitle(nextTitle);
+  if (!title) {
+    showToast("Chat name cannot be empty");
+    return;
+  }
+
+  chat.title = title;
+  chat.titleMode = "manual";
+  chat.titleGeneratedAt = null;
+  chat.timestamp = Date.now();
+  await saveChats();
+  renderHistoryList();
+  showToast("Chat renamed");
 }
 
 function initUsageBar() {
@@ -1459,6 +1622,7 @@ async function loadChats() {
 
     Object.values(chats).forEach(chat => {
       if (!chat.files) chat.files = {};
+      if (!chat.titleMode) chat.titleMode = chat.title && chat.title !== "New Chat" ? "legacy" : "auto";
       Object.entries(chat.files).forEach(([path, file]) => {
         if (!globalWorkspace[path] || (file.updatedAt || 0) >= (globalWorkspace[path].updatedAt || 0)) {
           globalWorkspace[path] = { ...file, chatId: chat.id };
@@ -1484,6 +1648,8 @@ function createNewChatSession() {
   chats[id] = {
     id: id,
     title: "New Chat",
+    titleMode: "auto",
+    titleGeneratedAt: null,
     messages: [],
     files: {},
     timestamp: Date.now()
@@ -2089,9 +2255,34 @@ function renderHistoryList() {
     });
     item.appendChild(textSpan);
 
+    const actions = document.createElement("div");
+    actions.className = "history-item-actions";
+
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "history-item-action";
+    renameBtn.title = "Rename Chat";
+    renameBtn.setAttribute("aria-label", "Rename chat");
+    renameBtn.innerHTML = EDIT_ICON;
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameChatManually(session.id);
+    });
+    actions.appendChild(renameBtn);
+
+    const aiRenameBtn = document.createElement("button");
+    aiRenameBtn.className = "history-item-action";
+    aiRenameBtn.title = "Generate Chat Name";
+    aiRenameBtn.setAttribute("aria-label", "Generate chat name");
+    aiRenameBtn.innerHTML = SPARKLES_ICON;
+    aiRenameBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await generateChatTitle(session.id);
+    });
+    actions.appendChild(aiRenameBtn);
+
     // Delete Button
     const deleteBtn = document.createElement("button");
-    deleteBtn.className = "history-item-delete";
+    deleteBtn.className = "history-item-action history-item-delete";
     deleteBtn.title = "Delete Chat";
     deleteBtn.innerHTML = `
       <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -2102,7 +2293,8 @@ function renderHistoryList() {
       e.stopPropagation();
       deleteChatSession(session.id);
     });
-    item.appendChild(deleteBtn);
+    actions.appendChild(deleteBtn);
+    item.appendChild(actions);
 
     historyList.appendChild(item);
   });
@@ -4111,6 +4303,8 @@ function initChatEvents() {
         if (confirm("Are you sure you want to clear this chat's messages?")) {
           chats[currentChatId].messages = [];
           chats[currentChatId].title = "New Chat";
+          chats[currentChatId].titleMode = "auto";
+          chats[currentChatId].titleGeneratedAt = null;
           await saveChats();
           renderChatHistory();
           renderHistoryList();
@@ -4526,7 +4720,11 @@ async function commitMessageEdit(messageIndex, nextContent) {
   activeChat.timestamp = Date.now();
 
   if (messageIndex === 0 && originalRole === "user") {
-    activeChat.title = trimmed ? (trimmed.slice(0, 24) + (trimmed.length > 24 ? "..." : "")) : "Attachment Chat";
+    if (activeChat.titleMode !== "manual") {
+      activeChat.title = makeFallbackChatTitle(trimmed);
+      activeChat.titleMode = "auto";
+      activeChat.titleGeneratedAt = null;
+    }
   }
 
   if (originalRole === "user") {
@@ -4987,7 +5185,9 @@ async function handleSendMessage() {
   
   // Set chat title dynamically if first user message
   if (activeChat.messages.length === 0) {
-    activeChat.title = userInput ? (userInput.slice(0, 24) + (userInput.length > 24 ? "..." : "")) : "Attachment Chat";
+    activeChat.title = makeFallbackChatTitle(userInput);
+    activeChat.titleMode = "auto";
+    activeChat.titleGeneratedAt = null;
   }
 
   // Append user message
@@ -5229,6 +5429,7 @@ async function runAgentCycle() {
       const messageIndex = activeChat.messages.push({ role: "assistant", content: aiReply }) - 1;
       appendMessageUI("assistant", aiReply, [], true, { messageIndex });
       await saveChats();
+      await maybeAutoGenerateChatTitle(currentChatId);
     }
 
   } catch (error) {
