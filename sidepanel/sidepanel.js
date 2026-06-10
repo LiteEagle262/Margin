@@ -1648,6 +1648,22 @@ function makeFallbackChatTitle(input, fallback = "Attachment Chat") {
   return trimmed ? (trimmed.slice(0, 24) + (trimmed.length > 24 ? "..." : "")) : fallback;
 }
 
+function makeLocalChatTitle(transcript) {
+  const firstUserLine = String(transcript || "")
+    .split("\n")
+    .find(line => line.startsWith("User:")) || "";
+  const source = (firstUserLine || transcript || "")
+    .replace(/^User:\s*/i, "")
+    .replace(/^Assistant:\s*/i, "")
+    .replace(/\[Attachments:[^\]]+\]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!source) return "Attachment Chat";
+
+  const words = source.split(" ").filter(Boolean).slice(0, 10);
+  return sanitizeChatTitle(words.join(" ")) || makeFallbackChatTitle(source);
+}
+
 function sanitizeChatTitle(value) {
   return String(value || "")
     .replace(/["'`]/g, "")
@@ -1656,6 +1672,30 @@ function sanitizeChatTitle(value) {
     .replace(/[.!?:;-]+$/g, "")
     .trim()
     .slice(0, 60);
+}
+
+function extractMessageContentText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map(part => {
+      if (typeof part === "string") return part;
+      if (typeof part?.text === "string") return part.text;
+      if (typeof part?.content === "string") return part.content;
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
+function extractChatTitleFromCompletion(data) {
+  const firstChoice = data?.choices?.[0];
+  const message = firstChoice?.message || {};
+  const returnedText =
+    extractMessageContentText(message.content) ||
+    extractMessageContentText(firstChoice?.text) ||
+    extractMessageContentText(message.title);
+  return sanitizeChatTitle(returnedText);
 }
 
 function buildTitleTranscript(chat) {
@@ -1680,6 +1720,56 @@ function buildTitleTranscript(chat) {
   return lines.join("\n").slice(0, 6000);
 }
 
+function buildChatTitleRequestBody(transcript, options = {}) {
+  const requestBody = {
+    model: settings.model,
+    messages: [
+      {
+        role: "system",
+        content: "Name this chat from the user and assistant messages only. Ignore browser/tool activity because it is not included. Return only a clear descriptive title, preferably 4 to 10 words. Do not return a single-word title unless the conversation truly has no other distinguishing detail. No quotes, no punctuation at the end."
+      },
+      {
+        role: "user",
+        content: transcript
+      }
+    ],
+    temperature: options.temperature ?? 0.2,
+    max_tokens: options.maxTokens || 256,
+    usage: { include: true }
+  };
+
+  if (options.disableReasoning) {
+    requestBody.reasoning = { effort: "none", exclude: true };
+  }
+
+  if (options.includeProvider !== false) {
+    const providerPreferences = buildProviderPreferences();
+    if (providerPreferences) requestBody.provider = providerPreferences;
+  }
+
+  return requestBody;
+}
+
+async function fetchChatTitleCompletion(requestBody) {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${settings.apiKey}`,
+      "HTTP-Referer": "https://github.com/scrapeflow",
+      "X-Title": "ScrapeFlow Chat Naming"
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`OpenRouter Error (${response.status}): ${errText}`);
+  }
+
+  return await response.json();
+}
+
 async function generateChatTitle(chatId = currentChatId, { silent = false } = {}) {
   const chat = chats[chatId];
   if (!chat) return "";
@@ -1701,60 +1791,42 @@ async function generateChatTitle(chatId = currentChatId, { silent = false } = {}
     return "";
   }
 
-  const requestBody = {
-    model: settings.model,
-    messages: [
-      {
-        role: "system",
-        content: "Name this chat from the user and assistant messages only. Ignore browser/tool activity because it is not included. Return only a concise title, 2 to 6 words, no quotes, no punctuation at the end."
-      },
-      {
-        role: "user",
-        content: transcript
-      }
-    ],
-    temperature: 0.2,
-    max_tokens: 24,
-    usage: { include: true }
-  };
-
-  const providerPreferences = buildProviderPreferences();
-  const reasoningPreferences = buildReasoningPreferences();
-  if (providerPreferences) requestBody.provider = providerPreferences;
-  if (reasoningPreferences) requestBody.reasoning = reasoningPreferences;
-
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${settings.apiKey}`,
-        "HTTP-Referer": "https://github.com/scrapeflow",
-        "X-Title": "ScrapeFlow Chat Naming"
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`OpenRouter Error (${response.status}): ${errText}`);
-    }
-
-    const data = await response.json();
+    const data = await fetchChatTitleCompletion(buildChatTitleRequestBody(transcript));
     if (data.usage) recordUsageForChat(data.usage, chatId);
 
-    const title = sanitizeChatTitle(data.choices?.[0]?.message?.content);
-    if (!title) throw new Error("No title was returned.");
+    let title = extractChatTitleFromCompletion(data);
+    let usedLocalFallback = false;
+
+    if (!title) {
+      console.warn("OpenRouter returned an empty chat title. Retrying without provider routing.", {
+        finish_reason: data.choices?.[0]?.finish_reason,
+        native_finish_reason: data.choices?.[0]?.native_finish_reason,
+        message: data.choices?.[0]?.message
+      });
+      const retryData = await fetchChatTitleCompletion(buildChatTitleRequestBody(transcript, {
+        includeProvider: false,
+        disableReasoning: true,
+        temperature: 0,
+        maxTokens: 256
+      }));
+      if (retryData.usage) recordUsageForChat(retryData.usage, chatId);
+      title = extractChatTitleFromCompletion(retryData);
+    }
+
+    if (!title) {
+      title = makeLocalChatTitle(transcript);
+      usedLocalFallback = true;
+    }
 
     chat.title = title;
     chat.titleMode = "ai";
     chat.titleGeneratedAt = Date.now();
-    chat.timestamp = Date.now();
     await saveChats();
     renderHistoryList();
     updateUsageBar();
     refreshOpenRouterBalance();
-    if (!silent) showToast("Chat name generated");
+    if (!silent) showToast(usedLocalFallback ? "Model returned empty name; used local title" : "Chat name generated");
     return title;
   } catch (error) {
     console.error("Error generating chat title:", error);
@@ -1786,7 +1858,6 @@ async function renameChatManually(chatId = currentChatId) {
   chat.title = title;
   chat.titleMode = "manual";
   chat.titleGeneratedAt = null;
-  chat.timestamp = Date.now();
   await saveChats();
   renderHistoryList();
   showToast("Chat renamed");
@@ -2456,6 +2527,16 @@ function initHistoryDrawer() {
   }
 }
 
+function getChatSortTime(chat) {
+  const timestamp = Number(chat?.timestamp);
+  if (Number.isFinite(timestamp) && timestamp > 0) return timestamp;
+
+  const idTimestamp = Number(chat?.id);
+  if (Number.isFinite(idTimestamp) && idTimestamp > 0) return idTimestamp;
+
+  return 0;
+}
+
 // Render the list of chat sessions inside left drawer
 function renderHistoryList() {
   const historyList = document.getElementById("history-list");
@@ -2463,8 +2544,8 @@ function renderHistoryList() {
 
   historyList.innerHTML = "";
 
-  // Sort chats by timestamp descending
-  const sortedSessions = Object.values(chats).sort((a, b) => b.timestamp - a.timestamp);
+  // Sort by newest conversation activity first; renaming does not change this order.
+  const sortedSessions = Object.values(chats).sort((a, b) => getChatSortTime(b) - getChatSortTime(a));
 
   sortedSessions.forEach(session => {
     const item = document.createElement("div");
