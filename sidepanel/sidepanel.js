@@ -16,6 +16,14 @@ let settings = {
     apiUrl: "",
     apiKey: ""
   },
+  webSearch: {
+    enabled: false,
+    provider: "tavily",
+    apiKey: "",
+    searchDepth: "basic",
+    maxResults: 5,
+    includeAnswer: false
+  },
   toolAccess: {},
   networkCapture: {
     autoCaptureLatchedTab: false,
@@ -37,7 +45,7 @@ let settings = {
   authManualKeys: {}
 };
 
-const CONFIG_EXPORT_VERSION = 1;
+const CONFIG_EXPORT_VERSION = 2;
 const SETTINGS_STORAGE_KEYS = [
   "apiKey",
   "model",
@@ -46,6 +54,7 @@ const SETTINGS_STORAGE_KEYS = [
   "mcpServers",
   "mcpBridge",
   "tempEmail",
+  "webSearch",
   "toolAccess",
   "networkCapture",
   "providerRouting",
@@ -83,6 +92,9 @@ IMPORTANT — File output rules:
 
 const AUTHENTICATOR_SYSTEM_PROMPT_ADDENDUM =
   "If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.";
+
+const WEB_SEARCH_SYSTEM_PROMPT_ADDENDUM =
+  "When web search tools are available, use search_web for current or external information and fetch_search_result to inspect a specific source before detailed summarization, source-grounded claims, or quotes.";
 
 const CONTEXT_PACKING = {
   maxWindowShare: 0.86,
@@ -123,6 +135,11 @@ const TOOL_ACCESS_GROUPS = [
     tools: ["write_file", "read_file", "list_files", "search_files", "read_context_item", "get_file_info", "rename_file", "delete_file"]
   },
   {
+    id: "search",
+    label: "Web search",
+    tools: ["search_web", "fetch_search_result"]
+  },
+  {
     id: "auth",
     label: "Authenticator",
     tools: ["get_authenticator_code", "list_authenticator_domains"]
@@ -156,6 +173,8 @@ const TOOL_LABELS = {
   read_file: "Read file",
   list_files: "List files",
   search_files: "Search files",
+  search_web: "Search web",
+  fetch_search_result: "Fetch search result",
   read_context_item: "Read archived context",
   get_file_info: "File info",
   rename_file: "Rename file",
@@ -674,6 +693,63 @@ const WORKSPACE_TOOL_NAMES = new Set([
   "read_context_item", "get_file_info", "rename_file", "delete_file"
 ]);
 
+const WEB_SEARCH_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "search_web",
+      description: "Search the live web using the configured search provider. Returns compact cited results with titles, URLs, snippets, scores, and optional answer text. Use this when current or external information is needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Natural-language search query." },
+          limit: { type: "number", description: "Maximum results to return. Defaults to the configured setting." },
+          topic: {
+            type: "string",
+            enum: ["general", "news"],
+            description: "Search topic. Use news for current events; defaults to general."
+          },
+          search_depth: {
+            type: "string",
+            enum: ["basic", "advanced"],
+            description: "Provider search depth. Advanced may cost more credits."
+          },
+          site: { type: "string", description: "Optional domain to restrict results to, e.g. irs.gov." },
+          include_answer: { type: "boolean", description: "Ask provider for a concise generated answer when supported." }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "fetch_search_result",
+      description: "Extract clean readable content from a specific URL returned by search_web or supplied by the user. Returns title/URL/content when available and should be used before summarizing a source in detail.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL to extract." },
+          extract_depth: {
+            type: "string",
+            enum: ["basic", "advanced"],
+            description: "Extraction depth. Advanced may cost more credits."
+          },
+          format: {
+            type: "string",
+            enum: ["markdown", "text"],
+            description: "Preferred content format. Defaults to markdown."
+          },
+          max_chars: { type: "number", description: "Maximum content characters to return. Defaults to 20000." }
+        },
+        required: ["url"]
+      }
+    }
+  }
+];
+
+const WEB_SEARCH_TOOL_NAMES = new Set(["search_web", "fetch_search_result"]);
+
 // Initialize Sidebar
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", init);
@@ -695,6 +771,7 @@ async function init() {
     initProviderRoutingSettings();
     initMcpSettings();
     initMcpBridgeSettings();
+    initWebSearchSettings();
     initToolAccessSettings();
     initAuthManualKeySettings();
     initChatEvents();
@@ -753,6 +830,7 @@ function normalizeAppConfig(raw) {
     mcpServers: normalizeMcpServers(value.mcpServers),
     mcpBridge: normalizeMcpBridgeSettings(value.mcpBridge),
     tempEmail: normalizeTempEmailSettings(value.tempEmail),
+    webSearch: normalizeWebSearchSettings(value.webSearch),
     toolAccess: normalizeToolAccessSettings(value.toolAccess),
     networkCapture: normalizeNetworkCaptureSettings(value.networkCapture),
     providerRouting: normalizeProviderRoutingSettings(value.providerRouting),
@@ -770,6 +848,7 @@ function buildSettingsStorageObject(config = settings) {
     mcpServers: normalized.mcpServers,
     mcpBridge: normalized.mcpBridge,
     tempEmail: normalized.tempEmail,
+    webSearch: normalized.webSearch,
     toolAccess: normalized.toolAccess,
     networkCapture: normalized.networkCapture,
     providerRouting: normalized.providerRouting,
@@ -786,6 +865,7 @@ function renderSettingsFormFromState() {
   renderMcpServersList();
   renderMcpBridgeSettings();
   renderTempEmailSettings();
+  renderWebSearchSettings();
   renderToolAccessSettings();
   renderNetworkCaptureSettings();
   renderProviderRoutingSettings();
@@ -813,6 +893,7 @@ function collectSettingsFromUI() {
     mcpServers: collectMcpServersFromUI(),
     mcpBridge: collectMcpBridgeFromUI(),
     tempEmail: collectTempEmailFromUI(),
+    webSearch: collectWebSearchFromUI(),
     toolAccess: collectToolAccessFromUI(),
     networkCapture: collectNetworkCaptureFromUI(),
     providerRouting: collectProviderRoutingFromUI(),
@@ -1413,7 +1494,11 @@ function computeContextBreakdown() {
   const breakdown = { system: 0, browserTools: 0, mcpTools: 0, chat: 0, toolIO: 0, images: 0 };
 
   breakdown.system += approxTokens(getEffectiveSystemPrompt());
-  breakdown.browserTools += approxTokens([...filterEnabledToolSchemas(BROWSER_TOOLS), ...filterEnabledToolSchemas(WORKSPACE_TOOLS)]);
+  breakdown.browserTools += approxTokens([
+    ...filterEnabledToolSchemas(BROWSER_TOOLS),
+    ...filterEnabledToolSchemas(WORKSPACE_TOOLS),
+    ...filterEnabledToolSchemas(WEB_SEARCH_TOOLS)
+  ]);
   const mcpTools = getMcpToolSchemas();
   if (mcpTools.length > 0) breakdown.mcpTools += approxTokens(mcpTools);
 
@@ -3487,6 +3572,86 @@ function normalizeMcpBridgeSettings(raw) {
   };
 }
 
+function normalizeWebSearchSettings(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  const provider = String(value.provider || "tavily").toLowerCase();
+  const depth = value.searchDepth === "advanced" ? "advanced" : "basic";
+  const maxResults = Math.min(Math.max(Number(value.maxResults) || 5, 1), 10);
+  return {
+    enabled: value.enabled === true,
+    provider: ["tavily", "brave"].includes(provider) ? provider : "tavily",
+    apiKey: typeof value.apiKey === "string" ? value.apiKey.trim() : "",
+    searchDepth: depth,
+    maxResults,
+    includeAnswer: value.includeAnswer === true
+  };
+}
+
+function renderWebSearchSettings() {
+  const enabledInput = document.getElementById("web-search-enabled");
+  const providerInput = document.getElementById("web-search-provider");
+  const keyInput = document.getElementById("web-search-api-key");
+  const depthInput = document.getElementById("web-search-depth");
+  const maxInput = document.getElementById("web-search-max-results");
+  const answerInput = document.getElementById("web-search-include-answer");
+  const badge = document.getElementById("web-search-status-badge");
+
+  const config = normalizeWebSearchSettings(settings.webSearch);
+  if (enabledInput) enabledInput.checked = config.enabled;
+  if (providerInput) providerInput.value = config.provider;
+  if (keyInput) keyInput.value = config.apiKey;
+  if (depthInput) depthInput.value = config.searchDepth;
+  if (maxInput) maxInput.value = String(config.maxResults);
+  if (answerInput) answerInput.checked = config.includeAnswer;
+
+  if (badge) {
+    const ready = config.enabled && Boolean(config.apiKey);
+    badge.textContent = ready ? "Tavily on" : (config.enabled ? "Needs key" : "Off");
+    badge.className = ready ? "mcp-bridge-badge connected" : (config.enabled ? "mcp-bridge-badge pending" : "mcp-bridge-badge");
+  }
+}
+
+function collectWebSearchFromUI() {
+  const enabledInput = document.getElementById("web-search-enabled");
+  const providerInput = document.getElementById("web-search-provider");
+  const keyInput = document.getElementById("web-search-api-key");
+  const depthInput = document.getElementById("web-search-depth");
+  const maxInput = document.getElementById("web-search-max-results");
+  const answerInput = document.getElementById("web-search-include-answer");
+
+  return normalizeWebSearchSettings({
+    enabled: enabledInput ? enabledInput.checked === true : settings.webSearch?.enabled,
+    provider: providerInput ? providerInput.value : settings.webSearch?.provider,
+    apiKey: keyInput ? keyInput.value : settings.webSearch?.apiKey,
+    searchDepth: depthInput ? depthInput.value : settings.webSearch?.searchDepth,
+    maxResults: maxInput ? maxInput.value : settings.webSearch?.maxResults,
+    includeAnswer: answerInput ? answerInput.checked === true : settings.webSearch?.includeAnswer
+  });
+}
+
+function initWebSearchSettings() {
+  const ids = [
+    "web-search-enabled",
+    "web-search-provider",
+    "web-search-api-key",
+    "web-search-depth",
+    "web-search-max-results",
+    "web-search-include-answer"
+  ];
+  ids.forEach((id) => {
+    const el = document.getElementById(id);
+    const syncWebSearchSettings = () => {
+      settings.webSearch = collectWebSearchFromUI();
+      renderWebSearchSettings();
+      renderToolAccessSettings();
+    };
+    el?.addEventListener("change", syncWebSearchSettings);
+    if (el?.tagName === "INPUT") {
+      el.addEventListener("input", syncWebSearchSettings);
+    }
+  });
+}
+
 function buildMcpBridgeConfigSnippet(config) {
   const payload = {
     mcpServers: {
@@ -4101,13 +4266,19 @@ function getMcpToolSchemas() {
 }
 
 function filterEnabledToolSchemas(tools) {
-  return tools.filter((tool) => isBuiltInToolEnabled(tool.function?.name));
+  return tools.filter((tool) => {
+    const name = tool.function?.name;
+    if (!isBuiltInToolEnabled(name)) return false;
+    if (WEB_SEARCH_TOOL_NAMES.has(name)) return isWebSearchAvailable();
+    return true;
+  });
 }
 
 function getAllAgentTools() {
   return [
     ...filterEnabledToolSchemas(BROWSER_TOOLS),
     ...filterEnabledToolSchemas(WORKSPACE_TOOLS),
+    ...filterEnabledToolSchemas(WEB_SEARCH_TOOLS),
     ...getMcpToolSchemas()
   ];
 }
@@ -4281,6 +4452,200 @@ async function executeWorkspaceTool(name, args = {}) {
   }
 }
 
+function isWebSearchAvailable() {
+  const config = normalizeWebSearchSettings(settings.webSearch);
+  return config.enabled === true && Boolean(config.apiKey) && Boolean(WEB_SEARCH_PROVIDER_ADAPTERS[config.provider]);
+}
+
+function createWebSearchError(message, extra = {}) {
+  return {
+    ok: false,
+    tool: "web_search",
+    error_code: "web_search_error",
+    recoverable: true,
+    message,
+    ...extra
+  };
+}
+
+function clampInteger(value, fallback, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(Math.max(Math.floor(num), min), max);
+}
+
+function normalizeSearchDomain(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return url.hostname.replace(/^www\./, "");
+  } catch {
+    return raw
+      .replace(/^https?:\/\//i, "")
+      .split("/")[0]
+      .split(":")[0]
+      .replace(/^www\./, "")
+      .trim();
+  }
+}
+
+function truncateText(value, maxChars) {
+  const text = String(value || "");
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 80))}\n\n[Truncated: ${text.length - maxChars} additional characters omitted]`;
+}
+
+async function tavilyRequest(endpoint, body, apiKey) {
+  const response = await fetch(`https://api.tavily.com/${endpoint}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(body)
+  });
+
+  const raw = await response.text();
+  let payload = null;
+  if (raw) {
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      payload = { raw };
+    }
+  }
+
+  if (!response.ok) {
+    const detail = payload?.detail || payload?.error || payload?.message || raw || response.statusText;
+    throw new Error(`Tavily ${endpoint} failed (${response.status}): ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+  }
+
+  return payload || {};
+}
+
+const WEB_SEARCH_PROVIDER_ADAPTERS = {
+  tavily: {
+    async search(args, config) {
+      const query = String(args.query || "").trim();
+      if (!query) return createWebSearchError("search_web requires query.", { tool: "search_web" });
+
+      const maxResults = clampInteger(args.limit, config.maxResults, 1, 10);
+      const depth = args.search_depth === "advanced" ? "advanced" : config.searchDepth;
+      const topic = args.topic === "news" ? "news" : "general";
+      const site = normalizeSearchDomain(args.site);
+      const includeAnswer = args.include_answer === true || (args.include_answer !== false && config.includeAnswer === true);
+
+      const payload = {
+        query,
+        topic,
+        search_depth: depth,
+        max_results: maxResults,
+        include_answer: includeAnswer,
+        include_raw_content: false,
+        include_images: false
+      };
+      if (site) payload.include_domains = [site];
+
+      const data = await tavilyRequest("search", payload, config.apiKey);
+      return {
+        ok: true,
+        provider: "tavily",
+        tool: "search_web",
+        query: data.query || query,
+        answer: data.answer || "",
+        results: (data.results || []).slice(0, maxResults).map((item, index) => ({
+          rank: index + 1,
+          title: item.title || "",
+          url: item.url || "",
+          content: item.content || "",
+          score: typeof item.score === "number" ? item.score : null,
+          published_date: item.published_date || null
+        })),
+        response_time: data.response_time || null,
+        request_id: data.request_id || null,
+        next_actions: [
+          {
+            tool: "fetch_search_result",
+            reason: "Extract the full readable source before detailed summarization or quoting."
+          }
+        ]
+      };
+    },
+
+    async fetchResult(args, config) {
+      const url = String(args.url || "").trim();
+      if (!url) return createWebSearchError("fetch_search_result requires url.", { tool: "fetch_search_result" });
+
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return createWebSearchError("fetch_search_result requires a valid absolute URL.", { tool: "fetch_search_result" });
+      }
+      if (!/^https?:$/.test(parsed.protocol)) {
+        return createWebSearchError("fetch_search_result only supports http and https URLs.", { tool: "fetch_search_result" });
+      }
+
+      const maxChars = clampInteger(args.max_chars, 20000, 1000, 60000);
+      const data = await tavilyRequest("extract", {
+        urls: url,
+        extract_depth: args.extract_depth === "advanced" ? "advanced" : "basic",
+        format: args.format === "text" ? "text" : "markdown",
+        include_images: false,
+        include_favicon: false
+      }, config.apiKey);
+
+      const result = Array.isArray(data.results) ? data.results[0] : null;
+      const failed = Array.isArray(data.failed_results) ? data.failed_results[0] : null;
+      if (!result?.raw_content) {
+        return createWebSearchError("Tavily could not extract readable content for this URL.", {
+          tool: "fetch_search_result",
+          url,
+          failed_result: failed || null,
+          request_id: data.request_id || null
+        });
+      }
+
+      return {
+        ok: true,
+        provider: "tavily",
+        tool: "fetch_search_result",
+        url: result.url || url,
+        title: result.title || "",
+        content: truncateText(result.raw_content, maxChars),
+        content_chars: String(result.raw_content || "").length,
+        truncated: String(result.raw_content || "").length > maxChars,
+        response_time: data.response_time || null,
+        request_id: data.request_id || null
+      };
+    }
+  }
+};
+
+async function executeWebSearchTool(name, args = {}) {
+  const config = normalizeWebSearchSettings(settings.webSearch);
+  if (!config.enabled) {
+    return createWebSearchError("Web search is disabled in settings.", { tool: name, recoverable: false });
+  }
+  if (!config.apiKey) {
+    return createWebSearchError("Web search needs a Tavily API key in settings.", { tool: name, recoverable: false });
+  }
+
+  const adapter = WEB_SEARCH_PROVIDER_ADAPTERS[config.provider];
+  if (!adapter) {
+    return createWebSearchError(`Unsupported web search provider "${config.provider}".`, { tool: name, recoverable: false });
+  }
+
+  try {
+    if (name === "search_web") return await adapter.search(args, config);
+    if (name === "fetch_search_result") return await adapter.fetchResult(args, config);
+    return createWebSearchError(`Unknown web search tool "${name}".`, { tool: name, recoverable: false });
+  } catch (err) {
+    return createWebSearchError(err.message || String(err), { tool: name });
+  }
+}
+
 async function executePageToolViaBackground(name, args = {}) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: "page-tool", name, arguments: args }, (response) => {
@@ -4343,6 +4708,9 @@ async function executeTool(name, args = {}) {
   }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
     return executeWorkspaceTool(name, args);
+  }
+  if (WEB_SEARCH_TOOL_NAMES.has(name)) {
+    return executeWebSearchTool(name, args);
   }
   return executePageToolViaBackground(name, args);
 }
@@ -5485,9 +5853,14 @@ async function handleSendMessage() {
 // AGENT CONVERSATION RUN LOOP
 // ----------------------------------------------------
 function getEffectiveSystemPrompt() {
-  const basePrompt = settings.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-  if (basePrompt.includes("get_authenticator_code")) return basePrompt;
-  return `${basePrompt}\n\n${AUTHENTICATOR_SYSTEM_PROMPT_ADDENDUM}`;
+  let prompt = settings.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+  if (!prompt.includes("get_authenticator_code")) {
+    prompt = `${prompt}\n\n${AUTHENTICATOR_SYSTEM_PROMPT_ADDENDUM}`;
+  }
+  if (isWebSearchAvailable() && !prompt.includes("search_web")) {
+    prompt = `${prompt}\n\n${WEB_SEARCH_SYSTEM_PROMPT_ADDENDUM}`;
+  }
+  return prompt;
 }
 
 async function runAgentCycle() {
