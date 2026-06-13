@@ -1,5 +1,7 @@
 // shared/network-logs.js - CDP Network domain capture for request debugging
 
+import { normalizeNetworkCaptureSettings } from "./settings-schema.js";
+
 const NETWORK_STORAGE_KEY = "scrapeflowNetworkLogs";
 const NETWORK_SETTINGS_KEY = "networkCapture";
 const MAX_LOG_ENTRIES = 500;
@@ -44,16 +46,6 @@ function getTabNetworkState(tabId) {
   return networkState.tabs.get(tabId);
 }
 
-function normalizeNetworkCaptureSettings(raw) {
-  const value = raw && typeof raw === "object" ? raw : {};
-  return {
-    autoCaptureLatchedTab: value.autoCaptureLatchedTab === true,
-    persistSessionLogs: value.persistSessionLogs !== false,
-    captureResponseBodies: value.captureResponseBodies !== false,
-    redactSensitiveData: value.redactSensitiveData !== false
-  };
-}
-
 async function loadNetworkCaptureSettings() {
   try {
     const stored = await chrome.storage.local.get([NETWORK_SETTINGS_KEY]);
@@ -64,7 +56,7 @@ async function loadNetworkCaptureSettings() {
   return networkState.settings;
 }
 
-function isNetworkCaptureActive(tabId) {
+export function isNetworkCaptureActive(tabId) {
   const state = networkState.tabs.get(tabId);
   return state?.capturing === true;
 }
@@ -528,7 +520,7 @@ async function stopAllAutoNetworkCaptures() {
   await Promise.all(stops);
 }
 
-async function syncNetworkAutoCapture(latchedTab = null) {
+export async function syncNetworkAutoCapture(latchedTab = null) {
   await hydrateNetworkState();
   await loadNetworkCaptureSettings();
 
@@ -653,7 +645,7 @@ async function clearNetworkLogs(tabId) {
   return "Network logs cleared for the active tab.";
 }
 
-async function executeNetworkTool(name, args = {}, tabId) {
+export async function executeNetworkTool(name, args = {}, tabId) {
   try {
     switch (name) {
       case "start_network_capture":
