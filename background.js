@@ -1,8 +1,9 @@
 // background.js - ScrapeFlow background service worker
 
-importScripts("shared/browser-tools.js");
+import { getActiveTabId, executePageTool, formatToolResultForMcp } from "./shared/browser-tools.js";
+import { executeNetworkTool, syncNetworkAutoCapture } from "./shared/network-logs.js";
+import { normalizeMcpBridgeSettings, normalizeTempEmailSettings, DEFAULT_MCP_BRIDGE_PORT } from "./shared/settings-schema.js";
 
-const DEFAULT_MCP_BRIDGE_PORT = 9229;
 const RECONNECT_DELAY_MS = 3000;
 const KEEPALIVE_ALARM = "scrapeflow-mcp-keepalive";
 
@@ -55,11 +56,11 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (changes.mcpBridge) {
-    bridgeConfig = normalizeMcpBridgeConfig(changes.mcpBridge.newValue);
+    bridgeConfig = normalizeMcpBridgeSettings(changes.mcpBridge.newValue);
     scheduleMcpBridgeConnection();
   }
   if (changes.tempEmail) {
-    tempEmailConfig = normalizeTempEmailConfig(changes.tempEmail.newValue);
+    tempEmailConfig = normalizeTempEmailSettings(changes.tempEmail.newValue);
     sendFeatureFlagsToBridge();
   }
   if (changes.toolAccess) {
@@ -239,15 +240,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-function normalizeMcpBridgeConfig(raw) {
-  const value = raw && typeof raw === "object" ? raw : {};
-  return {
-    enabled: value.enabled === true,
-    port: Number(value.port) || DEFAULT_MCP_BRIDGE_PORT,
-    token: String(value.token || "")
-  };
-}
-
 async function ensureMcpBridgeDefaults(forceNewToken = false) {
   const stored = await chrome.storage.local.get(["mcpBridge"]);
   const current = stored.mcpBridge;
@@ -275,21 +267,12 @@ function generateBridgeToken() {
 async function loadMcpBridgeConfig() {
   await ensureMcpBridgeDefaults(false);
   const stored = await chrome.storage.local.get(["mcpBridge"]);
-  bridgeConfig = normalizeMcpBridgeConfig(stored.mcpBridge);
-}
-
-function normalizeTempEmailConfig(raw) {
-  const value = raw && typeof raw === "object" ? raw : {};
-  return {
-    enabled: value.enabled === true,
-    apiUrl: typeof value.apiUrl === "string" ? value.apiUrl.trim() : "",
-    apiKey: typeof value.apiKey === "string" ? value.apiKey : ""
-  };
+  bridgeConfig = normalizeMcpBridgeSettings(stored.mcpBridge);
 }
 
 async function loadTempEmailConfig() {
   const stored = await chrome.storage.local.get(["tempEmail"]);
-  tempEmailConfig = normalizeTempEmailConfig(stored.tempEmail);
+  tempEmailConfig = normalizeTempEmailSettings(stored.tempEmail);
 }
 
 function normalizeToolAccessConfig(raw) {

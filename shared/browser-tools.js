@@ -1,7 +1,7 @@
 // shared/browser-tools.js - Browser automation tools for ScrapeFlow
-// Used by background.js (MCP bridge) via importScripts.
+// Used by background.js (MCP bridge).
 
-importScripts("shared/network-logs.js");
+import { isNetworkCaptureActive, executeNetworkTool } from "./network-logs.js";
 
 // Returns the latched tab record from session storage if any, else null.
 // Auto-clears the entry if the tab no longer exists.
@@ -25,7 +25,7 @@ async function getLatchedTabRecord() {
 // All browser tools route through this. When a tab is latched, every tool
 // targets that tab — even when the user has navigated to a different tab in
 // the foreground. When no latch is set, falls back to the active tab.
-async function getActiveTabId() {
+export async function getActiveTabId() {
   const latched = await getLatchedTabRecord();
   if (latched) return latched.tabId;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -634,7 +634,7 @@ async function evaluateScriptFunction(args = {}) {
   return toolOk("evaluate_script", "Script evaluated.", { result: raw });
 }
 
-async function executePageTool(name, args = {}) {
+export async function executePageTool(name, args = {}) {
   try {
     switch (name) {
       case "get_active_tab": {
@@ -835,7 +835,7 @@ ${domResult.outerHtml}`;
   }
 }
 
-function formatToolResultForMcp(result) {
+export function formatToolResultForMcp(result) {
   if (typeof result === "object" && result && result.screenshot) {
     const base64 = String(result.screenshot).replace(/^data:image\/png;base64,/, "");
     return {
