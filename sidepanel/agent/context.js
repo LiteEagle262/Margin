@@ -6,6 +6,7 @@ import { settings, chats, currentChatId, openRouterModels } from "../state/store
 import { approxTokens, formatTokens } from "../lib/format.js";
 import { isWebSearchAvailable } from "../api/tavily.js";
 import { getAllAgentTools } from "../tools/execute.js";
+import { getFallbackContextWindow } from "../settings/sections/agent-limits.js";
 
 export const DEFAULT_SYSTEM_PROMPT = `You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
 You can execute actions on the current webpage using your built-in tools. For browser interaction, prefer take_snapshot first, then use uid-based click_element, fill_element, fill_form, hover_element, press_key, and wait_for. Use get_dom for raw scraping/debugging when the compact snapshot is insufficient.
@@ -47,10 +48,16 @@ const TEXT_ATTACHMENT_EXTENSIONS = new Set([
 export function getActiveModelInfo() {
   const id = settings.model;
   const match = openRouterModels.find(m => m.id === id);
+  const realContext = Number(match?.context_length);
+  // We only "know" the window when the model record is loaded AND advertises a
+  // usable context_length. Otherwise we surface the configurable fallback and
+  // flag it so the UI can show "unknown" instead of a misleading number.
+  const contextKnown = Number.isFinite(realContext) && realContext > 0;
   return {
     id,
     name: match?.name || id,
-    contextWindow: Number(match?.context_length) || 128000,
+    contextWindow: contextKnown ? realContext : getFallbackContextWindow(),
+    contextKnown,
     promptRate: Number(match?.pricing?.prompt) || 0,
     completionRate: Number(match?.pricing?.completion) || 0,
     hasInfo: !!match
@@ -133,7 +140,7 @@ function getResponseReserveTokens(contextWindow) {
 
 function getModelMessageBudget() {
   const model = getActiveModelInfo();
-  const contextWindow = model.contextWindow || 128000;
+  const contextWindow = model.contextWindow || getFallbackContextWindow();
   const toolsTokens = approxTokens(getAllAgentTools());
   const systemTokens = approxTokens(getEffectiveSystemPrompt());
   const reserveTokens = getResponseReserveTokens(contextWindow);

@@ -6,7 +6,7 @@ routed through the background service worker.
 
 ## What Changed
 
-- Logs now use a per-tab rolling buffer of the last 500 requests.
+- Logs now use a per-tab rolling buffer of the last 1500 requests.
 - Captured logs can be restored across chats during the current browser session
   through `chrome.storage.session`.
 - Settings include auto-capture for the latched tab, session persistence,
@@ -38,6 +38,11 @@ Manual capture still works:
 2. Reload or interact with the page.
 3. Call `get_network_logs`.
 4. Call `get_network_log_detail` with an ID from the list.
+
+You can also open the sidepanel Network Logs viewer from the header button or
+from Settings -> Network Capture. The viewer searches the current per-tab
+buffer locally, and Download Current Logs exports the full current buffer as
+redacted JSON for debugging.
 
 ## Caveats
 

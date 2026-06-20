@@ -68,6 +68,10 @@ export let settings = {
     showThinking: false,
     keepThinkingOpen: false
   },
+  agentLimits: {
+    maxToolCalls: 14,
+    fallbackContextWindow: 128000
+  },
   authManualKeys: {}
 };
 

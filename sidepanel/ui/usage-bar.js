@@ -74,25 +74,31 @@ export function updateUsageBar() {
 
   const model = getActiveModelInfo();
   const { total, breakdown } = computeContextBreakdown();
+  const known = model.contextKnown;
   const window = model.contextWindow;
-  const pct = window > 0 ? Math.min(100, (total / window) * 100) : 0;
+  const pct = known && window > 0 ? Math.min(100, (total / window) * 100) : 0;
 
   // Ring: stroke-dasharray uses pathLength="100" so the arc maps to percent.
+  // When the real window is unknown we leave the ring neutral rather than imply
+  // a false percentage against the fallback budget.
   const ringProgress = ringBtn.querySelector(".ring-progress");
   if (ringProgress) {
-    ringProgress.style.strokeDasharray = `${pct} 100`;
+    ringProgress.style.strokeDasharray = known ? `${pct} 100` : "0 100";
   }
-  ringBtn.classList.toggle("near-limit", pct >= 75 && pct < 90);
-  ringBtn.classList.toggle("over-limit", pct >= 90);
+  ringBtn.classList.toggle("near-limit", known && pct >= 75 && pct < 90);
+  ringBtn.classList.toggle("over-limit", known && pct >= 90);
 
-  ringBtn.querySelector(".context-percent").textContent = `${Math.round(pct)}%`;
-  ringBtn.querySelector(".context-summary").textContent =
-    `${formatTokens(total)} of ${formatTokens(window)} ctx`;
+  ringBtn.querySelector(".context-percent").textContent = known ? `${Math.round(pct)}%` : "–";
+  ringBtn.querySelector(".context-summary").textContent = known
+    ? `${formatTokens(total)} of ${formatTokens(window)} ctx`
+    : `${formatTokens(total)} used · max unknown`;
 
   // Tooltip header + breakdown rows
   tooltip.querySelector(".tooltip-total").textContent = `${formatTokens(total)} tokens`;
   tooltip.querySelector(".tooltip-model").textContent = model.name;
-  tooltip.querySelector(".tooltip-window").textContent = `${formatTokens(window)} ctx window`;
+  tooltip.querySelector(".tooltip-window").textContent = known
+    ? `${formatTokens(window)} ctx window`
+    : "context window unknown";
 
   const bar = tooltip.querySelector(".tooltip-bar");
   const list = tooltip.querySelector(".tooltip-breakdown");

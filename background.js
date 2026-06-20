@@ -1,7 +1,7 @@
 // background.js - ScrapeFlow background service worker
 
 import { getActiveTabId, executePageTool, formatToolResultForMcp } from "./shared/browser-tools.js";
-import { executeNetworkTool, syncNetworkAutoCapture } from "./shared/network-logs.js";
+import { executeNetworkTool, getNetworkLogSnapshot, syncNetworkAutoCapture } from "./shared/network-logs.js";
 import { normalizeMcpBridgeSettings, normalizeTempEmailSettings, DEFAULT_MCP_BRIDGE_PORT } from "./shared/settings-schema.js";
 
 const RECONNECT_DELAY_MS = 3000;
@@ -220,6 +220,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true, result });
       } catch (err) {
         sendResponse({ ok: false, result: err.message || String(err) });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "network-logs/snapshot") {
+    (async () => {
+      try {
+        const tabId = await getActiveTabId();
+        const tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
+        const result = await getNetworkLogSnapshot(tabId, message.arguments || {});
+        sendResponse({
+          ok: true,
+          result: {
+            ...result,
+            tab: tab ? {
+              id: tab.id,
+              title: tab.title || "",
+              url: tab.url || "",
+              windowId: tab.windowId
+            } : null
+          }
+        });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message || String(err) });
       }
     })();
     return true;

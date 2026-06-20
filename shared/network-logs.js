@@ -4,7 +4,7 @@ import { normalizeNetworkCaptureSettings } from "./settings-schema.js";
 
 const NETWORK_STORAGE_KEY = "scrapeflowNetworkLogs";
 const NETWORK_SETTINGS_KEY = "networkCapture";
-const MAX_LOG_ENTRIES = 500;
+const MAX_LOG_ENTRIES = 1500;
 const MAX_RETURNED_ENTRIES = 150;
 const MAX_BODY_LENGTH = 8000;
 const MAX_PERSISTED_BODY_LENGTH = 4000;
@@ -622,6 +622,24 @@ async function getNetworkLogs(tabId, args = {}) {
     totalBufferedForTab: state.entries.length,
     entries: entries.map((entry) => formatLogEntry(entry, includeBody))
   }, null, 2);
+}
+
+export async function getNetworkLogSnapshot(tabId, args = {}) {
+  if (!tabId) throw new Error("No active tab in current window.");
+  await hydrateNetworkState();
+  const state = getTabNetworkState(tabId);
+  const includeBody = args.include_body === true;
+
+  return {
+    capturing: state.capturing,
+    autoCapture: state.autoCapture,
+    persistedSessionBuffer: networkState.settings.persistSessionLogs,
+    redaction: networkState.settings.redactSensitiveData ? "sensitive headers and common secret fields redacted" : "off",
+    totalBufferedForTab: state.entries.length,
+    maxBufferedForTab: MAX_LOG_ENTRIES,
+    maxReturnedForTool: MAX_RETURNED_ENTRIES,
+    entries: state.entries.map((entry) => formatLogEntry(entry, includeBody))
+  };
 }
 
 async function getNetworkLogDetail(tabId, requestId) {
