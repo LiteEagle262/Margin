@@ -6,11 +6,11 @@ import { formatUsdBalance } from "../lib/format.js";
 
 const API_BASE = "https://openrouter.ai/api/v1";
 
-function buildHeaders(apiKey, appTitle = "ScrapeFlow Chat", json = false) {
+function buildHeaders(apiKey, appTitle = "N/A", json = false) {
   const headers = {
     Authorization: `Bearer ${apiKey}`,
-    "HTTP-Referer": "https://github.com/scrapeflow",
-    "X-Title": appTitle
+    "HTTP-Referer": "https://github.com/NA",
+    "X-Title": appTitle,
   };
   if (json) headers["Content-Type"] = "application/json";
   return headers;
@@ -19,7 +19,7 @@ function buildHeaders(apiKey, appTitle = "ScrapeFlow Chat", json = false) {
 // Returns text-output models sorted by display name.
 export async function fetchModels(apiKey) {
   const response = await fetch(`${API_BASE}/models?output_modalities=text`, {
-    headers: buildHeaders(apiKey)
+    headers: buildHeaders(apiKey),
   });
 
   if (!response.ok) {
@@ -29,13 +29,15 @@ export async function fetchModels(apiKey) {
 
   const data = await response.json();
   return (data.data || [])
-    .filter(model => model.id)
+    .filter((model) => model.id)
     .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
 }
 
 // Returns "" when the model id has no author/slug form.
 export function modelEndpointsUrl(modelId) {
-  const parts = String(modelId || "").split("/").filter(Boolean);
+  const parts = String(modelId || "")
+    .split("/")
+    .filter(Boolean);
   if (parts.length < 2) return "";
   const author = encodeURIComponent(parts.shift());
   const slug = parts.map(encodeURIComponent).join("/");
@@ -44,12 +46,14 @@ export function modelEndpointsUrl(modelId) {
 
 export async function fetchModelEndpoints(apiKey, modelId) {
   const response = await fetch(modelEndpointsUrl(modelId), {
-    headers: buildHeaders(apiKey)
+    headers: buildHeaders(apiKey),
   });
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Failed to load providers (${response.status}): ${errText}`);
+    throw new Error(
+      `Failed to load providers (${response.status}): ${errText}`,
+    );
   }
 
   const data = await response.json();
@@ -60,24 +64,33 @@ export async function fetchModelEndpoints(apiKey, modelId) {
 // { ok: false, status, errorText } when the credits endpoint rejects.
 export async function fetchCredits(apiKey) {
   const response = await fetch(`${API_BASE}/credits`, {
-    headers: buildHeaders(apiKey)
+    headers: buildHeaders(apiKey),
   });
 
   if (!response.ok) {
-    return { ok: false, status: response.status, errorText: await response.text() };
+    return {
+      ok: false,
+      status: response.status,
+      errorText: await response.text(),
+    };
   }
 
   const payload = await response.json();
   const totalCredits = Number(payload?.data?.total_credits);
   const totalUsage = Number(payload?.data?.total_usage);
-  return { ok: true, totalCredits, totalUsage, balance: totalCredits - totalUsage };
+  return {
+    ok: true,
+    totalCredits,
+    totalUsage,
+    balance: totalCredits - totalUsage,
+  };
 }
 
 // Fallback balance source for keys without credits access.
 // Returns { label, title } for the badge, or null when unavailable.
 export async function fetchKeyBalance(apiKey) {
   const response = await fetch(`${API_BASE}/key`, {
-    headers: buildHeaders(apiKey)
+    headers: buildHeaders(apiKey),
   });
 
   if (!response.ok) return null;
@@ -89,29 +102,35 @@ export async function fetchKeyBalance(apiKey) {
   const limit = Number(data.limit);
 
   if (Number.isFinite(remaining)) {
-    const limitText = Number.isFinite(limit) ? ` of ${formatUsdBalance(limit)}` : "";
+    const limitText = Number.isFinite(limit)
+      ? ` of ${formatUsdBalance(limit)}`
+      : "";
     return {
       label: `Balance ${formatUsdBalance(remaining)}`,
-      title: `OpenRouter key remaining: ${formatUsdBalance(remaining)}${limitText}`
+      title: `OpenRouter key remaining: ${formatUsdBalance(remaining)}${limitText}`,
     };
   }
 
   if (Number.isFinite(usage)) {
     return {
       label: `Balance --`,
-      title: `OpenRouter key usage: ${formatUsdBalance(usage)}`
+      title: `OpenRouter key usage: ${formatUsdBalance(usage)}`,
     };
   }
 
   return null;
 }
 
-export async function fetchChatCompletion(apiKey, requestBody, { signal = undefined, appTitle = "ScrapeFlow Chat" } = {}) {
+export async function fetchChatCompletion(
+  apiKey,
+  requestBody,
+  { signal = undefined, appTitle = "N/A" } = {},
+) {
   const response = await fetch(`${API_BASE}/chat/completions`, {
     method: "POST",
     headers: buildHeaders(apiKey, appTitle, true),
     body: JSON.stringify(requestBody),
-    signal
+    signal,
   });
 
   if (!response.ok) {

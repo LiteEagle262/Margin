@@ -18,6 +18,7 @@ import { toolAccessSection } from "./sections/tool-access.js";
 import { networkCaptureSection } from "./sections/network-capture.js";
 import { providerRoutingSection } from "./sections/provider-routing.js";
 import { reasoningSection } from "./sections/reasoning.js";
+import { agentLimitsSection } from "./sections/agent-limits.js";
 import { authManualKeysSection } from "./sections/auth-manual-keys.js";
 
 export const SETTINGS_SECTIONS = [
@@ -29,5 +30,6 @@ export const SETTINGS_SECTIONS = [
   networkCaptureSection,
   providerRoutingSection,
   reasoningSection,
+  agentLimitsSection,
   authManualKeysSection
 ];
