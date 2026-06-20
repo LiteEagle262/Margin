@@ -17,6 +17,7 @@ export const SETTINGS_STORAGE_KEYS = [
   "networkCapture",
   "providerRouting",
   "reasoning",
+  "agentLimits",
   "authManualKeys"
 ];
 

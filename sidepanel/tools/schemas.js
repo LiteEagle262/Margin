@@ -264,7 +264,7 @@ export const BROWSER_TOOLS = [
           status: { type: "number", description: "Filter by HTTP status code, e.g. 200 or 404." },
           type: { type: "string", description: "Filter by resource type, e.g. XHR, Fetch, Document, Script." },
           failed: { type: "boolean", description: "Filter to failed requests when true, or successful/non-failed requests when false." },
-          limit: { type: "number", description: "Max entries to return. Defaults to 50." },
+          limit: { type: "number", description: "Max entries to return after filters search the full buffer. Defaults to 50, capped at 150." },
           include_body: { type: "boolean", description: "Include redacted request/response bodies in results. Defaults to false." }
         }
       }
