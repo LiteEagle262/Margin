@@ -9,10 +9,11 @@ import { SETTINGS_SECTIONS } from "./settings/registry.js";
 import { loadSettings, collectSettingsFromUI, persistSettings, exportConfig, importConfigFile } from "./settings/core.js";
 import { loadChats, createNewChatSession } from "./features/chats.js";
 import { exportGlobalWorkspace, importRawChatFile } from "./features/chat-export.js";
+import { initNetworkLogs } from "./features/network-logs.js";
 import { refreshMcpTools } from "./tools/execute.js";
 import { initHistoryDrawer } from "./ui/history-drawer.js";
 import { initSettingsToggle, switchView } from "./ui/navigation.js";
-import { initModelPicker, updateModelBadge, refreshOpenRouterBalance } from "./ui/model-picker.js";
+import { initModelPicker, updateModelBadge, refreshOpenRouterBalance, ensureOpenRouterModelsLoaded } from "./ui/model-picker.js";
 import { initChatEvents, initUploadEvents } from "./ui/composer.js";
 import { initFileViewer, renderWorkspaceStrip } from "./ui/workspace-strip.js";
 import { initUsageBar } from "./ui/usage-bar.js";
@@ -42,11 +43,16 @@ async function init() {
     initChatEvents();
     initUploadEvents();
     initFileViewer();
+    initNetworkLogs();
     initUsageBar();
     initLatchTab();
     renderWorkspaceStrip();
     updateModelBadge();
     refreshOpenRouterBalance();
+    // Load the OpenRouter model list at startup so the active model's real
+    // context window (and pricing) is known immediately, instead of falling
+    // back to the configured default. Refresh the meter once it arrives.
+    ensureOpenRouterModelsLoaded().then(updateModelBadge).catch(() => {});
   } catch (err) {
     console.error("Initialization error:", err);
   }

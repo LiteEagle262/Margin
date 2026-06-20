@@ -7,11 +7,11 @@ import { mcpToolName, parseMcpToolName, connectMcpServer, callMcpTool } from "..
 import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool } from "../api/tavily.js";
 import { BROWSER_TOOLS, WORKSPACE_TOOLS, WORKSPACE_TOOL_NAMES, WEB_SEARCH_TOOLS } from "./schemas.js";
 import { DEFAULT_ENABLED_TOOLS, isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
+import { getMaxToolCalls } from "../settings/sections/agent-limits.js";
 import { executeWorkspaceTool } from "../features/workspace.js";
 
 const TOOL_LOOP_LIMITS = {
   sameFailure: 2,
-  browserToolsWithoutAssistant: 14,
   repeatedReadOnly: 3
 };
 
@@ -169,16 +169,17 @@ export function evaluateToolLoopGuard(toolName, toolArgs, result) {
   const parsed = parseToolResultObject(result);
   const failed = parsed?.ok === false || (typeof result === "string" && result.startsWith("Error:"));
 
+  const maxToolCalls = getMaxToolCalls(); // 0 means unlimited
   const browserToolNames = new Set(BROWSER_TOOLS.map((tool) => tool.function.name));
   if (browserToolNames.has(toolName)) {
     activeToolRunStats.browserToolCount += 1;
-    if (activeToolRunStats.browserToolCount > TOOL_LOOP_LIMITS.browserToolsWithoutAssistant) {
+    if (maxToolCalls > 0 && activeToolRunStats.browserToolCount > maxToolCalls) {
       return {
         ok: false,
         tool: toolName,
         error_code: "tool_loop_limit",
         recoverable: false,
-        message: `Stopped tool loop after ${activeToolRunStats.browserToolCount} browser tool calls without an assistant response. Summarize progress or ask the user before continuing.`
+        message: `Stopped tool loop after ${activeToolRunStats.browserToolCount} browser tool calls without an assistant response (limit: ${maxToolCalls}). Summarize progress or ask the user before continuing.`
       };
     }
   }
