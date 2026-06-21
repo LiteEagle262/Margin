@@ -20,7 +20,9 @@ import { saveGlobalWorkspace } from "./workspace.js";
 // ----------------------------------------------------
 const EXPORT_TOOL_FULL_RESULT_LIMIT = 12000;
 const EXPORT_TOOL_SUMMARY_LIMIT = 900;
-const EXPORT_SUMMARY_INPUT_LIMIT = 36000;
+// Per-result cap used only when building the FULL input handed to the
+// summarizer model (the on-disk .md keeps the smaller, readable limits above).
+const EXPORT_SUMMARY_TOOL_RESULT_LIMIT = 24000;
 const EXPORT_FULL_TOOL_NAMES = new Set([
   "write_file", "read_file", "get_file_info", "read_context_item",
   "list_files", "search_files"
@@ -142,16 +144,22 @@ function shouldExportFullToolResult(toolName, resultText, indexFromEnd) {
   return resultText.length <= 2400 && !EXPORT_NOISY_TOOL_NAMES.has(toolName);
 }
 
-function formatToolResultForExport(call, indexFromEnd) {
+function formatToolResultForExport(call, indexFromEnd, full = false) {
   const resultText = String(call.result?.content || "");
   if (!resultText) return "No stored result.";
+  // Full mode (summarizer input): keep every tool result verbatim up to a
+  // generous per-result cap, including otherwise-noisy tools, so the model can
+  // mine captured details (endpoints, payloads, ids).
+  if (full) {
+    return truncateForExport(resultText, EXPORT_SUMMARY_TOOL_RESULT_LIMIT, `${call.name} result`);
+  }
   if (shouldExportFullToolResult(call.name, resultText, indexFromEnd)) {
     return truncateForExport(resultText, EXPORT_TOOL_FULL_RESULT_LIMIT, `${call.name} result`);
   }
   return `Summary: ${summarizeForOneLine(resultText)}\nOriginal size: about ${formatTokens(approxTokens(resultText))} tokens. Full result is preserved in raw JSON export.`;
 }
 
-function buildCompactTranscriptMarkdown(chat) {
+function buildCompactTranscriptMarkdown(chat, { full = false } = {}) {
   const messages = Array.isArray(chat?.messages) ? chat.messages : [];
   const lines = [];
   let visibleIndex = 0;
@@ -165,7 +173,7 @@ function buildCompactTranscriptMarkdown(chat) {
     lines.push(`### ${visibleIndex}. ${label}`);
     const content = escapeMarkdownText(msg.content || "");
     if (content) {
-      lines.push(truncateForExport(content, 6000, `${label.toLowerCase()} message`));
+      lines.push(full ? content : truncateForExport(content, 6000, `${label.toLowerCase()} message`));
     } else if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
       lines.push("(assistant requested tool calls)");
     } else {
@@ -194,7 +202,7 @@ function buildCompactTranscriptMarkdown(chat) {
   return lines.join("\n").trim() || "No user or assistant messages.";
 }
 
-function buildToolActivityMarkdown(chat) {
+function buildToolActivityMarkdown(chat, { full = false } = {}) {
   const groups = buildToolActivityGroups(chat);
   if (groups.length === 0) return "No tool calls were stored for this chat.";
 
@@ -216,7 +224,7 @@ function buildToolActivityMarkdown(chat) {
       lines.push("Arguments:");
       lines.push(markdownFence(prettyPrint(call.args), "json"));
       lines.push("Result:");
-      lines.push(markdownFence(formatToolResultForExport(call, indexFromEnd)));
+      lines.push(markdownFence(formatToolResultForExport(call, indexFromEnd, full)));
     });
 
     lines.push("");
@@ -241,20 +249,41 @@ function buildWorkspaceMarkdown(chat) {
 }
 
 function buildSummaryInputForModel(chat) {
+  // The summarizer runs on the same model as the chat, so the full conversation
+  // is fed in (no global slice). Builders run in "full" mode to keep message
+  // text and tool results verbatim rather than the readable .md trims.
   const sections = [
     `Chat title: ${chat.title || "New Chat"}`,
     `Model: ${settings.model || "unknown"}`,
     "",
-    "Compact transcript:",
-    buildCompactTranscriptMarkdown(chat),
+    "=== SOURCE MATERIAL TO MINE (numbering is for reference only — do NOT echo it back as turns) ===",
     "",
-    "Tool activity:",
-    buildToolActivityMarkdown(chat),
+    "Conversation source:",
+    buildCompactTranscriptMarkdown(chat, { full: true }),
+    "",
+    "Tool activity (arguments and full results):",
+    buildToolActivityMarkdown(chat, { full: true }),
     "",
     "Workspace files:",
     buildWorkspaceMarkdown(chat)
   ];
-  return truncateForExport(sections.join("\n"), EXPORT_SUMMARY_INPUT_LIMIT, "summary input");
+  return sections.join("\n");
+}
+
+// Reserve output room inside the model's context window so feeding the whole
+// chat in can't crowd out the summary. Returns a max_tokens that leaves the
+// input plus overhead inside the window, capped to a sane ceiling.
+function computeSummaryMaxTokens(inputText) {
+  const model = getActiveModelInfo();
+  const window = Number(model.contextWindow) || 0;
+  const inputTokens = approxTokens(inputText);
+  const SYSTEM_OVERHEAD = 800;
+  const SAFETY = 2000;
+  const FLOOR = 1024;
+  const CEILING = 16000;
+  if (!window) return 8000;
+  const available = window - inputTokens - SYSTEM_OVERHEAD - SAFETY;
+  return Math.max(FLOOR, Math.min(CEILING, available));
 }
 
 async function generateAiHandoffSummary(chat) {
@@ -266,24 +295,33 @@ async function generateAiHandoffSummary(chat) {
     throw new Error("No AI model selected.");
   }
 
+  const summaryInput = buildSummaryInputForModel(chat);
+
   const requestBody = {
     model: activeModel,
     messages: [
       {
         role: "system",
         content: [
-          "You write concise AI handoff summaries for browser automation and scraping work.",
-          "Extract only durable context another AI needs to continue: goal, current state, decisions, important files/artifacts, blockers, and next actions.",
-          "Do not invent facts. Mention uncertainty when context is incomplete.",
-          "Use short Markdown sections."
+          "You write a COMPREHENSIVE handoff document so a fresh AI chat can continue this work seamlessly, with no access to the original conversation.",
+          "CRITICAL: This is NOT a chat recap. Never narrate the conversation turn by turn. The input is numbered source material to mine for facts — do not echo those turns back. Organize your output by TOPIC under the required sections, never by message order. Skip pleasantries, retries, and back-and-forth.",
+          "Do not attribute facts to turns or speakers (no 'in turn 4 the user asked...', no 'the assistant then ran...'). State each fact directly as standalone knowledge.",
+          "Capture every essential realization and detail. Prefer completeness over brevity — it is better to include too much than to drop something the next chat would need.",
+          "Preserve these VERBATIM, never paraphrased or summarized: (1) any code, scripts, or commands the user supplied OR that were executed in tool calls — copy the full code, including the exact arguments passed to each tool; (2) the user's explicit requirements, constraints, preferences, and instructions, in their own words; (3) concrete technical specifics — URLs/endpoints, HTTP methods, request/response payload shapes, headers, parameters, IDs, selectors, file paths.",
+          "When code or a tool invocation matters, reproduce the actual code/arguments in a fenced block rather than describing what it did.",
+          "Organize as Markdown with these sections: ## Goal & Scope, ## User Requirements (verbatim constraints, preferences, must-haves), ## Current State, ## Everything Learned (concrete facts, API details, payloads — verbatim), ## Code & Commands, ## Decisions & Rationale, ## Artifacts & Files, ## Dead Ends & What Failed (so the next chat does not repeat them), ## Blockers & Open Questions, ## Exact Next Steps.",
+          "In ## Code & Commands, YOU decide which tool activity matters. The next chat cannot see any tool calls, so reproduce verbatim, in fenced blocks, the code, scripts, queries, and tool-call arguments that are worth keeping — especially code run to test or accomplish something that worked, or that the next chat would need to re-run or build on. Omit routine, failed, or throwaway calls. Do not include a transcript of tool calls; include only the code/commands themselves with a one-line note on what each is for.",
+          "Do not invent facts. If something is unknown or uncertain, say so explicitly rather than guessing.",
+          "Write so that someone could resume the task from this document alone."
         ].join(" ")
       },
       {
         role: "user",
-        content: buildSummaryInputForModel(chat)
+        content: summaryInput
       }
     ],
     temperature: 0.1,
+    max_tokens: computeSummaryMaxTokens(summaryInput),
     usage: { include: true }
   };
 
@@ -450,7 +488,7 @@ function buildContextMarkdownExport(chat, handoffSummary, summaryError = "") {
     : [
         "AI-generated summary unavailable.",
         summaryError ? `Reason: ${summaryError}` : "",
-        "Use the compact transcript, tool activity, and raw JSON export for full provenance."
+        "Use the companion raw JSON export for the full chat, tool calls, and provenance."
       ].filter(Boolean).join("\n");
 
   return [
@@ -462,17 +500,11 @@ function buildContextMarkdownExport(chat, handoffSummary, summaryError = "") {
     "## AI Handoff Summary",
     summary,
     "",
-    "## Compact Transcript",
-    buildCompactTranscriptMarkdown(chat),
-    "",
-    "## Tool Activity",
-    buildToolActivityMarkdown(chat),
-    "",
     "## Workspace Files",
     buildWorkspaceMarkdown(chat),
     "",
     "## Raw Export Note",
-    "The companion JSON export preserves the complete stored chat object, full tool results, attachments, and files attached to this chat. Export the global workspace separately from Settings."
+    "This document is an AI-generated handoff. The companion JSON export preserves the complete stored chat object, full transcript, tool calls and results, attachments, and files attached to this chat. Export the global workspace separately from Settings."
   ].join("\n");
 }
 
