@@ -1,0 +1,5 @@
+scrapeflow-cli
+.scrapeflow-cli/
+*.exe
+*.test
+.DS_Store
