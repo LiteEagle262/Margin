@@ -1,8 +1,10 @@
 // shared/network-logs.js - CDP Network domain capture for request debugging
 
+import { normalizeNetworkCaptureSettings } from "./settings-schema.js";
+
 const NETWORK_STORAGE_KEY = "scrapeflowNetworkLogs";
 const NETWORK_SETTINGS_KEY = "networkCapture";
-const MAX_LOG_ENTRIES = 500;
+const MAX_LOG_ENTRIES = 1500;
 const MAX_RETURNED_ENTRIES = 150;
 const MAX_BODY_LENGTH = 8000;
 const MAX_PERSISTED_BODY_LENGTH = 4000;
@@ -44,16 +46,6 @@ function getTabNetworkState(tabId) {
   return networkState.tabs.get(tabId);
 }
 
-function normalizeNetworkCaptureSettings(raw) {
-  const value = raw && typeof raw === "object" ? raw : {};
-  return {
-    autoCaptureLatchedTab: value.autoCaptureLatchedTab === true,
-    persistSessionLogs: value.persistSessionLogs !== false,
-    captureResponseBodies: value.captureResponseBodies !== false,
-    redactSensitiveData: value.redactSensitiveData !== false
-  };
-}
-
 async function loadNetworkCaptureSettings() {
   try {
     const stored = await chrome.storage.local.get([NETWORK_SETTINGS_KEY]);
@@ -64,7 +56,7 @@ async function loadNetworkCaptureSettings() {
   return networkState.settings;
 }
 
-function isNetworkCaptureActive(tabId) {
+export function isNetworkCaptureActive(tabId) {
   const state = networkState.tabs.get(tabId);
   return state?.capturing === true;
 }
@@ -528,7 +520,7 @@ async function stopAllAutoNetworkCaptures() {
   await Promise.all(stops);
 }
 
-async function syncNetworkAutoCapture(latchedTab = null) {
+export async function syncNetworkAutoCapture(latchedTab = null) {
   await hydrateNetworkState();
   await loadNetworkCaptureSettings();
 
@@ -632,6 +624,24 @@ async function getNetworkLogs(tabId, args = {}) {
   }, null, 2);
 }
 
+export async function getNetworkLogSnapshot(tabId, args = {}) {
+  if (!tabId) throw new Error("No active tab in current window.");
+  await hydrateNetworkState();
+  const state = getTabNetworkState(tabId);
+  const includeBody = args.include_body === true;
+
+  return {
+    capturing: state.capturing,
+    autoCapture: state.autoCapture,
+    persistedSessionBuffer: networkState.settings.persistSessionLogs,
+    redaction: networkState.settings.redactSensitiveData ? "sensitive headers and common secret fields redacted" : "off",
+    totalBufferedForTab: state.entries.length,
+    maxBufferedForTab: MAX_LOG_ENTRIES,
+    maxReturnedForTool: MAX_RETURNED_ENTRIES,
+    entries: state.entries.map((entry) => formatLogEntry(entry, includeBody))
+  };
+}
+
 async function getNetworkLogDetail(tabId, requestId) {
   await hydrateNetworkState();
   const state = getTabNetworkState(tabId);
@@ -653,7 +663,7 @@ async function clearNetworkLogs(tabId) {
   return "Network logs cleared for the active tab.";
 }
 
-async function executeNetworkTool(name, args = {}, tabId) {
+export async function executeNetworkTool(name, args = {}, tabId) {
   try {
     switch (name) {
       case "start_network_capture":

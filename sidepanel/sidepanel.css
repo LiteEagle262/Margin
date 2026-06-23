@@ -1572,6 +1572,224 @@ button {
   white-space: pre;
 }
 
+.network-logs-overlay {
+  position: absolute;
+  inset: 0;
+  background: oklch(0.1 0.004 255 / 0.6);
+  backdrop-filter: blur(2px);
+  z-index: 25;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: var(--space-md);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.network-logs-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.network-logs-overlay.hidden {
+  display: none;
+}
+
+.network-logs-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  box-shadow: 0 12px 40px oklch(0 0 0 / 0.5);
+  overflow: hidden;
+  transform: translateY(8px);
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.network-logs-overlay.open .network-logs-panel {
+  transform: translateY(0);
+}
+
+.network-logs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-field);
+}
+
+.network-logs-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.network-logs-title {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.network-logs-meta {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.network-logs-actions,
+.network-capture-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.network-logs-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  gap: var(--space-xs);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.network-logs-toolbar input,
+.network-logs-toolbar select {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-field);
+  color: var(--text);
+  outline: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.network-logs-list {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg-field);
+}
+
+.network-logs-empty {
+  padding: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.network-log-item {
+  border-bottom: 1px solid var(--border);
+}
+
+.network-log-item[open] {
+  background: var(--bg);
+}
+
+.network-log-summary {
+  display: grid;
+  grid-template-columns: 62px 52px minmax(0, 1fr) 82px;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 38px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  list-style: none;
+}
+
+.network-log-summary::-webkit-details-marker {
+  display: none;
+}
+
+.network-log-summary:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.network-log-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.network-log-status.success {
+  color: var(--success);
+  border-color: color-mix(in oklch, var(--success), var(--border) 55%);
+}
+
+.network-log-status.redirect {
+  color: var(--text-soft);
+}
+
+.network-log-status.warning,
+.network-log-status.failed {
+  color: var(--warning);
+  border-color: color-mix(in oklch, var(--warning), var(--border) 55%);
+}
+
+.network-log-status.error {
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger), var(--border) 55%);
+}
+
+.network-log-method,
+.network-log-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.network-log-type {
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.network-log-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+}
+
+.network-log-detail {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-field);
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
 /* Usage bar: slim row under the input showing the context ring + cost. */
 .usage-bar {
   position: relative;
@@ -2690,5 +2908,26 @@ button {
   .auth-key-actions,
   .auth-key-row {
     grid-template-columns: 1fr;
+  }
+
+  .network-logs-header,
+  .network-logs-actions {
+    align-items: flex-start;
+  }
+
+  .network-logs-header {
+    flex-direction: column;
+  }
+
+  .network-logs-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .network-log-summary {
+    grid-template-columns: 56px 44px minmax(0, 1fr);
+  }
+
+  .network-log-type {
+    display: none;
   }
 }
