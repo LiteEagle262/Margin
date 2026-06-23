@@ -1,0 +1,12 @@
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-dm-sans), "Segoe UI", sans-serif;
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+}

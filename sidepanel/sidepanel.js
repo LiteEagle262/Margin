@@ -11,6 +11,11 @@ let settings = {
     port: 9229,
     token: ""
   },
+  localBridge: {
+    enabled: false,
+    port: 9230,
+    token: ""
+  },
   tempEmail: {
     enabled: false,
     apiUrl: "",
@@ -53,6 +58,7 @@ const SETTINGS_STORAGE_KEYS = [
   "systemPrompt",
   "mcpServers",
   "mcpBridge",
+  "localBridge",
   "tempEmail",
   "webSearch",
   "toolAccess",
@@ -74,9 +80,16 @@ let currentChatId = null;  // The ID of the active chat session
 let globalWorkspace = {};  // Persistent file workspace: { [path]: { path, content, language, description, updatedAt, chatId } }
 let uploadedAttachments = []; // Files queued for the next manual message
 let isAgentRunning = false;
+let agentRunChatId = null;
 let agentStopRequested = false;
 let agentAbortController = null;
 let activeToolRunStats = null;
+let localBridgeStatus = {
+  connected: false,
+  workspace: "",
+  mode: "workspace",
+  codex: false
+};
 
 const DEFAULT_SYSTEM_PROMPT = `You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
 You can execute actions on the current webpage using your built-in tools. For browser interaction, prefer take_snapshot first, then use uid-based click_element, fill_element, fill_form, hover_element, press_key, and wait_for. Use get_dom for raw scraping/debugging when the compact snapshot is insufficient.
@@ -132,7 +145,7 @@ const TOOL_ACCESS_GROUPS = [
   {
     id: "workspace",
     label: "Workspace files",
-    tools: ["write_file", "read_file", "list_files", "search_files", "read_context_item", "get_file_info", "rename_file", "delete_file"]
+    tools: ["write_file", "read_file", "list_files", "search_files", "read_context_item", "get_file_info", "rename_file", "delete_file", "exec"]
   },
   {
     id: "search",
@@ -179,6 +192,7 @@ const TOOL_LABELS = {
   get_file_info: "File info",
   rename_file: "Rename file",
   delete_file: "Delete file",
+  exec: "Run workspace command",
   get_authenticator_code: "Authenticator code",
   list_authenticator_domains: "Authenticator domains"
 };
@@ -563,6 +577,22 @@ const WORKSPACE_TOOLS = [
   {
     type: "function",
     function: {
+      name: "exec",
+      description: "Run a shell command inside the linked local workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Shell command to run." },
+          cwd: { type: "string", description: "Optional directory relative to the workspace root." },
+          timeout_ms: { type: "number", description: "Optional timeout in milliseconds." }
+        },
+        required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "write_file",
       description: "Create or update a script/file in the persistent workspace. Use this for all scraper scripts, configs, and code — never dump code in chat. The user sees a compact clickable file card.",
       parameters: {
@@ -690,7 +720,7 @@ const WORKSPACE_TOOLS = [
 
 const WORKSPACE_TOOL_NAMES = new Set([
   "write_file", "read_file", "list_files", "search_files",
-  "read_context_item", "get_file_info", "rename_file", "delete_file"
+  "read_context_item", "get_file_info", "rename_file", "delete_file", "exec"
 ]);
 
 const WEB_SEARCH_TOOLS = [
@@ -757,6 +787,20 @@ if (document.readyState === "loading") {
   init();
 }
 
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "local-bridge/status" && message.status) {
+    localBridgeStatus = { ...localBridgeStatus, ...message.status };
+    updateModelBadge();
+    refreshLocalBridgeStatus();
+    return;
+  }
+  if (message?.type === "local-bridge/codex-event" && message.event) {
+    handleCodexEvent(message.event).catch((error) => {
+      console.error("Codex event handling failed:", error);
+    });
+  }
+});
+
 async function init() {
   try {
     await loadSettings();
@@ -771,6 +815,7 @@ async function init() {
     initProviderRoutingSettings();
     initMcpSettings();
     initMcpBridgeSettings();
+    initLocalBridgeSettings();
     initWebSearchSettings();
     initToolAccessSettings();
     initAuthManualKeySettings();
@@ -784,6 +829,79 @@ async function init() {
     refreshOpenRouterBalance();
   } catch (err) {
     console.error("Initialization error:", err);
+  }
+}
+
+async function handleCodexEvent(event) {
+  const chatId = event.chatId;
+  const method = event.method;
+  const params = event.params || {};
+  if (!chatId || !chats[chatId]) return;
+
+  const chat = chats[chatId];
+  const appendStoredMessage = (role, content) => {
+    const messageIndex = chat.messages.push({ role, content }) - 1;
+    if (chatId === currentChatId) {
+      appendMessageUI(role, content, [], true, { messageIndex });
+    }
+  };
+
+  if (method === "item/started") {
+    const item = params.item || {};
+    if (item.type === "commandExecution") {
+      appendStoredMessage("tool-status", {
+        stage: "call",
+        name: "command",
+        args: { command: item.command, cwd: item.cwd }
+      });
+    } else if (item.type === "fileChange") {
+      appendStoredMessage("tool-status", {
+        stage: "call",
+        name: "file_change",
+        args: { changes: item.changes || [] }
+      });
+    }
+    await saveChats();
+    return;
+  }
+
+  if (method === "item/completed") {
+    const item = params.item || {};
+    if (item.type === "agentMessage" && item.text) {
+      appendStoredMessage("assistant", item.text);
+    } else if (item.type === "commandExecution") {
+      appendStoredMessage("tool-status", {
+        stage: "result",
+        name: "command",
+        result: item.aggregatedOutput || `Command ${item.status || "completed"}${item.exitCode == null ? "" : ` (exit ${item.exitCode})`}`
+      });
+    } else if (item.type === "fileChange") {
+      appendStoredMessage("tool-status", {
+        stage: "result",
+        name: "file_change",
+        result: JSON.stringify(item.changes || [], null, 2)
+      });
+    }
+    await saveChats();
+    return;
+  }
+
+  if (method === "turn/completed") {
+    const turn = params.turn || {};
+    if (turn.status === "failed") {
+      appendStoredMessage("assistant", `Error occurred during Codex turn: ${turn.error?.message || "Codex turn failed."}`);
+    } else if (turn.status === "interrupted") {
+      appendStoredMessage("assistant", "Response stopped.");
+    }
+    await saveChats();
+    if (chatId === agentRunChatId) endAgentRun();
+    return;
+  }
+
+  if (method === "error") {
+    appendStoredMessage("assistant", `Error occurred during Codex turn: ${params.error?.message || params.message || "Codex reported an error."}`);
+    await saveChats();
+    if (chatId === agentRunChatId) endAgentRun();
   }
 }
 
@@ -829,6 +947,7 @@ function normalizeAppConfig(raw) {
       : DEFAULT_SYSTEM_PROMPT,
     mcpServers: normalizeMcpServers(value.mcpServers),
     mcpBridge: normalizeMcpBridgeSettings(value.mcpBridge),
+    localBridge: normalizeLocalBridgeSettings(value.localBridge),
     tempEmail: normalizeTempEmailSettings(value.tempEmail),
     webSearch: normalizeWebSearchSettings(value.webSearch),
     toolAccess: normalizeToolAccessSettings(value.toolAccess),
@@ -847,6 +966,7 @@ function buildSettingsStorageObject(config = settings) {
     systemPrompt: normalized.systemPrompt,
     mcpServers: normalized.mcpServers,
     mcpBridge: normalized.mcpBridge,
+    localBridge: normalized.localBridge,
     tempEmail: normalized.tempEmail,
     webSearch: normalized.webSearch,
     toolAccess: normalized.toolAccess,
@@ -864,6 +984,7 @@ function renderSettingsFormFromState() {
   syncModelPickerValue();
   renderMcpServersList();
   renderMcpBridgeSettings();
+  renderLocalBridgeSettings();
   renderTempEmailSettings();
   renderWebSearchSettings();
   renderToolAccessSettings();
@@ -892,6 +1013,7 @@ function collectSettingsFromUI() {
     systemPrompt: systemPromptTextarea ? systemPromptTextarea.value.trim() : settings.systemPrompt,
     mcpServers: collectMcpServersFromUI(),
     mcpBridge: collectMcpBridgeFromUI(),
+    localBridge: collectLocalBridgeFromUI(),
     tempEmail: collectTempEmailFromUI(),
     webSearch: collectWebSearchFromUI(),
     toolAccess: collectToolAccessFromUI(),
@@ -954,6 +1076,7 @@ async function importConfigFile(file) {
     renderSettingsFormFromState();
     await refreshMcpTools();
     chrome.runtime.sendMessage({ type: "mcp-bridge/reconnect" });
+    chrome.runtime.sendMessage({ type: "local-bridge/reconnect" });
     chrome.runtime.sendMessage({ type: "mcp-bridge/feature-flags-changed" });
     chrome.runtime.sendMessage({ type: "network-capture/settings-changed" });
     updateModelBadge();
@@ -2699,6 +2822,7 @@ if (settingsForm) {
       await persistSettings(collectSettingsFromUI());
       await refreshMcpTools();
       chrome.runtime.sendMessage({ type: "mcp-bridge/reconnect" });
+      chrome.runtime.sendMessage({ type: "local-bridge/reconnect" });
       chrome.runtime.sendMessage({ type: "mcp-bridge/feature-flags-changed" });
       chrome.runtime.sendMessage({ type: "network-capture/settings-changed" });
       updateModelBadge();
@@ -2811,11 +2935,12 @@ function setSendButtonMode(mode) {
 
   const hasContent = (chatTextarea && chatTextarea.value.trim()) || uploadedAttachments.length > 0;
   sendBtn.classList.toggle("active", hasContent);
-  sendBtn.disabled = !settings.apiKey;
+  sendBtn.disabled = !(settings.apiKey || (localBridgeStatus.connected && localBridgeStatus.codex));
 }
 
 function beginAgentRun() {
   isAgentRunning = true;
+  agentRunChatId = currentChatId;
   agentStopRequested = false;
   agentAbortController = new AbortController();
   activeToolRunStats = {
@@ -2828,6 +2953,7 @@ function beginAgentRun() {
 
 function endAgentRun() {
   isAgentRunning = false;
+  agentRunChatId = null;
   agentAbortController = null;
   activeToolRunStats = null;
   setSendButtonMode("send");
@@ -2838,6 +2964,9 @@ function stopAgent() {
   agentStopRequested = true;
   if (agentAbortController) {
     agentAbortController.abort();
+  }
+  if (localBridgeStatus.connected && localBridgeStatus.codex && agentRunChatId) {
+    callLocalBridge({ type: "codex/interrupt", chatId: agentRunChatId }).catch(() => {});
   }
 }
 
@@ -2856,6 +2985,14 @@ function updateModelBadge() {
   const sendBtn = document.getElementById("send-btn");
   
   if (!activeModelBadge) return;
+
+  if (localBridgeStatus.connected && localBridgeStatus.codex) {
+    activeModelBadge.textContent = "Codex";
+    activeModelBadge.classList.add("active");
+    activeModelBadge.title = localBridgeStatus.workspace || "Local Codex workspace";
+    if (sendBtn && !isAgentRunning) sendBtn.disabled = false;
+    return;
+  }
   
   if (!settings.apiKey) {
     activeModelBadge.textContent = "No API Key";
@@ -3653,6 +3790,137 @@ function normalizeMcpBridgeSettings(raw) {
   };
 }
 
+function normalizeLocalBridgeSettings(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  return {
+    enabled: value.enabled === true,
+    port: Number(value.port) || 9230,
+    token: String(value.token || "")
+  };
+}
+
+function buildLocalBridgeConfigSnippet(config) {
+  const auth = config.token ? `\nscrapeflow-cli auth ${config.token}` : "";
+  return `cd /path/to/your/project\nscrapeflow-cli init${auth}\n\n# Workspace link only\nscrapeflow-cli serve --mode workspace\n\n# Or use ScrapeFlow as a Codex UI\nscrapeflow-cli serve --mode codex`;
+}
+
+async function renderLocalBridgeSettings() {
+  const enabledInput = document.getElementById("local-bridge-enabled");
+  const portInput = document.getElementById("local-bridge-port");
+  const tokenInput = document.getElementById("local-bridge-token");
+  const snippetEl = document.getElementById("local-bridge-config-snippet");
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "local-bridge/get-status" });
+    if (response?.config) {
+      settings.localBridge = normalizeLocalBridgeSettings({
+        ...settings.localBridge,
+        ...response.config,
+        token: settings.localBridge.token || response.config.token || ""
+      });
+    }
+    if (response?.status) {
+      localBridgeStatus = { ...localBridgeStatus, ...response.status };
+    }
+  } catch {
+    // Background may be unavailable during startup.
+  }
+
+  if (enabledInput) enabledInput.checked = settings.localBridge.enabled === true;
+  if (portInput) portInput.value = String(settings.localBridge.port || 9230);
+  if (tokenInput) tokenInput.value = settings.localBridge.token || "";
+  if (snippetEl) snippetEl.textContent = buildLocalBridgeConfigSnippet(settings.localBridge);
+  refreshLocalBridgeStatus();
+}
+
+function collectLocalBridgeFromUI() {
+  return normalizeLocalBridgeSettings({
+    enabled: document.getElementById("local-bridge-enabled")?.checked ?? settings.localBridge.enabled,
+    port: Number(document.getElementById("local-bridge-port")?.value || settings.localBridge.port),
+    token: document.getElementById("local-bridge-token")?.value.trim() || settings.localBridge.token
+  });
+}
+
+async function refreshLocalBridgeStatus() {
+  const badge = document.getElementById("local-bridge-status-badge");
+  if (!badge) return;
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "local-bridge/get-status" });
+    if (response?.status) {
+      localBridgeStatus = { ...localBridgeStatus, ...response.status };
+    }
+    if (!response?.config?.enabled) {
+      badge.textContent = "Disabled";
+      badge.className = "mcp-bridge-badge";
+    } else if (localBridgeStatus.connected) {
+      badge.textContent = localBridgeStatus.codex ? "Codex + workspace" : "Workspace linked";
+      badge.className = "mcp-bridge-badge connected";
+    } else {
+      badge.textContent = localBridgeStatus.lastError
+        ? `Waiting (${localBridgeStatus.lastError})`
+        : "Waiting for local CLI";
+      badge.className = "mcp-bridge-badge pending";
+    }
+    updateModelBadge();
+  } catch {
+    badge.textContent = "Status unavailable";
+    badge.className = "mcp-bridge-badge error";
+  }
+}
+
+function initLocalBridgeSettings() {
+  const enabledInput = document.getElementById("local-bridge-enabled");
+  const portInput = document.getElementById("local-bridge-port");
+  const tokenInput = document.getElementById("local-bridge-token");
+  const copyTokenBtn = document.getElementById("copy-local-bridge-token-btn");
+  const regenTokenBtn = document.getElementById("regenerate-local-bridge-token-btn");
+  const copyConfigBtn = document.getElementById("copy-local-bridge-config-btn");
+
+  const updateSnippet = () => {
+    const snippet = document.getElementById("local-bridge-config-snippet");
+    if (snippet) snippet.textContent = buildLocalBridgeConfigSnippet(collectLocalBridgeFromUI());
+  };
+  [enabledInput, portInput, tokenInput].forEach((el) => {
+    el?.addEventListener("input", updateSnippet);
+    el?.addEventListener("change", updateSnippet);
+  });
+
+  copyTokenBtn?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(tokenInput?.value || "");
+      showToast("Local bridge token copied");
+    } catch {
+      showToast("Could not copy token");
+    }
+  });
+
+  regenTokenBtn?.addEventListener("click", async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "local-bridge/regenerate-token" });
+      if (response?.token && tokenInput) {
+        tokenInput.value = response.token;
+        settings.localBridge.token = response.token;
+        updateSnippet();
+      }
+    } catch {
+      showToast("Could not regenerate token");
+    }
+  });
+
+  copyConfigBtn?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(buildLocalBridgeConfigSnippet(collectLocalBridgeFromUI()));
+      showToast("CLI commands copied");
+    } catch {
+      showToast("Could not copy commands");
+    }
+  });
+
+  renderLocalBridgeSettings();
+  setInterval(refreshLocalBridgeStatus, 4000);
+}
+
 function normalizeWebSearchSettings(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
   const provider = String(value.provider || "tavily").toLowerCase();
@@ -4384,6 +4652,67 @@ function getActiveChatFiles() {
 }
 
 async function executeWorkspaceTool(name, args = {}) {
+  if (localBridgeStatus.connected && name !== "read_context_item") {
+    const bridgeArgs = name === "list_files"
+      ? { ...args, recursive: args.recursive !== false }
+      : args;
+    const result = await callLocalBridge({
+      type: "tool/call",
+      name,
+      arguments: bridgeArgs
+    });
+    const text = (result?.content || [])
+      .filter((item) => item.type === "text")
+      .map((item) => item.text)
+      .join("\n");
+
+    if (name === "write_file" && args.path) {
+      const path = String(args.path).trim();
+      const existing = getWorkspaceFile(path);
+      const record = {
+        path,
+        content: String(args.content || ""),
+        language: args.language || inferLanguageFromPath(path),
+        description: args.description ? String(args.description) : (existing?.description || ""),
+        tags: Array.isArray(args.tags) ? args.tags.map(String).filter(Boolean) : (existing?.tags || []),
+        updatedAt: Date.now(),
+        chatId: currentChatId
+      };
+      getActiveChatFiles()[path] = record;
+      syncChatFileToGlobal(path, record);
+      await saveChats();
+      await saveGlobalWorkspace();
+      return {
+        type: "file",
+        action: existing ? "updated" : "created",
+        path,
+        language: record.language,
+        lines: record.content.split("\n").length,
+        description: record.description,
+        message: text || `Wrote ${path} in linked workspace.`
+      };
+    }
+
+    if (name === "rename_file" && args.old_path && args.new_path) {
+      const file = getWorkspaceFile(String(args.old_path));
+      if (file) {
+        delete getActiveChatFiles()[args.old_path];
+        removeGlobalFile(args.old_path);
+        const renamed = { ...file, path: String(args.new_path), updatedAt: Date.now() };
+        getActiveChatFiles()[args.new_path] = renamed;
+        syncChatFileToGlobal(args.new_path, renamed);
+        await saveChats();
+        await saveGlobalWorkspace();
+      }
+    } else if (name === "delete_file" && args.path) {
+      delete getActiveChatFiles()[args.path];
+      removeGlobalFile(args.path);
+      await saveChats();
+      await saveGlobalWorkspace();
+    }
+    return text;
+  }
+
   const files = getActiveChatFiles();
 
   switch (name) {
@@ -4528,9 +4857,23 @@ async function executeWorkspaceTool(name, args = {}) {
       return `Deleted ${path}.`;
     }
 
+    case "exec":
+      return "Error: exec requires an active Local Workspace Bridge.";
+
     default:
       return `Error: Unknown workspace tool "${name}"`;
   }
+}
+
+async function callLocalBridge(message) {
+  const response = await chrome.runtime.sendMessage({
+    type: "local-bridge/request",
+    message
+  });
+  if (!response?.ok) {
+    throw new Error(response?.error || "Local CLI bridge request failed");
+  }
+  return response.result;
 }
 
 function isWebSearchAvailable() {
@@ -4908,6 +5251,9 @@ function initChatEvents() {
     headerClearChatBtn.addEventListener("click", async () => {
       if (currentChatId && chats[currentChatId]) {
         if (confirm("Are you sure you want to clear this chat's messages?")) {
+          if (localBridgeStatus.connected && localBridgeStatus.codex) {
+            callLocalBridge({ type: "codex/reset", chatId: currentChatId }).catch(() => {});
+          }
           chats[currentChatId].messages = [];
           chats[currentChatId].title = "New Chat";
           chats[currentChatId].titleMode = "auto";
@@ -5886,7 +6232,8 @@ async function handleSendMessage() {
   const userInput = chatTextarea.value.trim();
   if (!userInput && uploadedAttachments.length === 0) return;
 
-  if (!settings.apiKey) {
+  const useCodex = localBridgeStatus.connected && localBridgeStatus.codex;
+  if (!useCodex && !settings.apiKey) {
     showToast("Please configure your OpenRouter API Key first!");
     switchView("settings");
     return;
@@ -5918,8 +6265,35 @@ async function handleSendMessage() {
   await saveChats();
   renderHistoryList();
 
-  // Kick off OpenRouter Agent loop
+  // Kick off the selected agent backend.
   beginAgentRun();
+  if (useCodex) {
+    const textAttachments = attachmentsToSend
+      .filter((attachment) => attachment.kind === "text" && attachment.text)
+      .map((attachment) => `\n\nAttached file: ${attachment.name || "attachment"}\n\`\`\`\n${attachment.text}\n\`\`\``)
+      .join("");
+    const images = attachmentsToSend
+      .filter((attachment) => attachment.kind === "image" && attachment.dataUrl)
+      .map((attachment) => attachment.dataUrl);
+    try {
+      await callLocalBridge({
+        type: "codex/message",
+        chatId: currentChatId,
+        text: `${userInput}${textAttachments}`,
+        images
+      });
+    } catch (error) {
+      const messageIndex = activeChat.messages.push({
+        role: "assistant",
+        content: `Error occurred during Codex turn: ${error.message}`
+      }) - 1;
+      appendMessageUI("assistant", `**Error:** ${error.message}`, [], true, { messageIndex });
+      await saveChats();
+      endAgentRun();
+    }
+    return;
+  }
+
   try {
     await runAgentCycle();
   } finally {
