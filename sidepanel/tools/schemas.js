@@ -255,7 +255,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "get_network_logs",
-      description: "List captured network requests from the active or latched tab, including persisted session hindsight when available. Filter by URL substring, method, status code, failed state, or resource type. Set include_body to true to include redacted request/response bodies.",
+      description: "List captured network requests from the active or latched tab, including persisted session hindsight when available. WebSocket and EventSource (SSE) connections are included with a frameCount; use type \"WebSocket\" or \"EventSource\" to filter for them. Filter by URL substring, method, status code, failed state, or resource type. Set include_body to true to include redacted request/response bodies.",
       parameters: {
         type: "object",
         properties: {
@@ -274,7 +274,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "get_network_log_detail",
-      description: "Get full details for a single network request including redacted headers and response body. Use the request id from get_network_logs.",
+      description: "Get full details for a single network request including redacted headers and response body. For WebSocket/EventSource connections this also returns the captured frames (most recent first capped). Use the request id from get_network_logs.",
       parameters: {
         type: "object",
         properties: {
@@ -499,6 +499,83 @@ export const WEB_SEARCH_TOOLS = [
           max_chars: { type: "number", description: "Maximum content characters to return. Defaults to 20000." }
         },
         required: ["url"]
+      }
+    }
+  }
+];
+
+// Recon / API-inspection tools: replay requests, inspect credentials/state,
+// and search loaded scripts. These can expose session secrets, so they live in
+// their own access group and are treated as risky by default.
+export const RECON_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "http_request",
+      description: "Make an HTTP request from the active page's context so its cookies, session, and origin apply. Use this to replay or modify an API call seen in network logs — change params/headers/body and inspect the response — instead of writing fetch code with run_js. Returns status, headers, and body. Cross-origin requests are still subject to the page's CORS policy.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Request URL. Relative URLs resolve against the active page." },
+          method: { type: "string", description: "HTTP method. Defaults to GET." },
+          headers: { type: "object", description: "Optional request headers as a key/value object." },
+          body: { type: "string", description: "Optional request body string (e.g. JSON or form-encoded). Omit for GET/HEAD." },
+          credentials: { type: "string", enum: ["include", "omit", "same-origin"], description: "Whether to send cookies. Defaults to include." },
+          max_response_chars: { type: "number", description: "Maximum response body characters to return. Defaults to 20000." }
+        },
+        required: ["url"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_cookies",
+      description: "Read cookies for the active tab's site (or a given domain), including httpOnly cookies that page scripts cannot access. Use this to understand session and auth tokens when reverse-engineering an API.",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Optional domain or URL. Defaults to the active tab." },
+          name: { type: "string", description: "Optional cookie name filter." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_storage",
+      description: "Read localStorage and/or sessionStorage for the active page. Useful for finding auth tokens, CSRF tokens, feature flags, and app state.",
+      parameters: {
+        type: "object",
+        properties: {
+          type: { type: "string", enum: ["local", "session", "all"], description: "Which storage to read. Defaults to all." },
+          keys: { type: "array", items: { type: "string" }, description: "Optional list of keys to return. Omit for all keys." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_scripts",
+      description: "List JavaScript files loaded by the active page (external src, inline, and resource-timing entries). Use before search_scripts to see the available bundles.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_scripts",
+      description: "Search the source of the page's loaded JavaScript bundles for a string or regex. Use this to find API endpoints, GraphQL operations, keys, or feature flags baked into the code. Returns matching snippets with file and line, not whole bundles. Cross-origin scripts are fetched only when their CORS policy allows it.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search term or regex source." },
+          regex: { type: "boolean", description: "Treat query as a case-insensitive regular expression. Defaults to false (substring)." },
+          max_matches: { type: "number", description: "Maximum matches to return. Defaults to 30, capped at 200." }
+        },
+        required: ["query"]
       }
     }
   }

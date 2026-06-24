@@ -9,6 +9,8 @@ const MAX_RETURNED_ENTRIES = 150;
 const MAX_BODY_LENGTH = 8000;
 const MAX_PERSISTED_BODY_LENGTH = 4000;
 const PERSIST_DEBOUNCE_MS = 500;
+const MAX_WS_FRAMES = 100;
+const MAX_FRAME_LENGTH = 2000;
 
 const SENSITIVE_HEADER_RE = /^(authorization|cookie|set-cookie|proxy-authorization|x-api-key|x-auth-token|x-csrf-token|x-xsrf-token)$/i;
 const SENSITIVE_FIELD_RE = /(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth|credential|session|csrf|xsrf)/i;
@@ -161,6 +163,30 @@ function decodeResponseBody(bodyResult, mimeType = "") {
 
   const redacted = redactTextBody(body, mimeType);
   return truncateText(redacted, MAX_BODY_LENGTH);
+}
+
+// WebSocket opcodes: 1=text, 2=binary, 8=close, 9=ping, 10=pong.
+function pushWsFrame(entry, frame) {
+  if (!Array.isArray(entry.frames)) entry.frames = [];
+  entry.frameCount = (entry.frameCount || 0) + 1;
+
+  let payload = frame.payload;
+  if (typeof payload === "string") {
+    if (frame.opcode === 2) {
+      payload = "[binary frame omitted]";
+    } else {
+      payload = redactTextBody(payload, "application/json");
+      const { text, truncated } = truncateText(payload, MAX_FRAME_LENGTH);
+      payload = truncated ? `${text} …[truncated]` : text;
+    }
+  }
+
+  const record = { direction: frame.direction, ts: frame.timestamp ?? null, payload };
+  if (frame.opcode != null) record.opcode = frame.opcode;
+  if (frame.eventName) record.eventName = frame.eventName;
+  if (frame.eventId) record.eventId = frame.eventId;
+  entry.frames.push(record);
+  while (entry.frames.length > MAX_WS_FRAMES) entry.frames.shift();
 }
 
 function createPublicRequestId(tabId, cdpRequestId) {
@@ -427,6 +453,104 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       scheduleNetworkPersist();
     }
   }
+
+  if (method === "Network.webSocketCreated") {
+    const entry = {
+      id: createPublicRequestId(source.tabId, params.requestId),
+      cdpRequestId: params.requestId,
+      url: params.url,
+      method: "WS",
+      type: "WebSocket",
+      timestamp: null,
+      wallTime: null,
+      requestHeaders: {},
+      postData: null,
+      status: null,
+      statusText: null,
+      responseHeaders: null,
+      mimeType: null,
+      responseBody: null,
+      bodyTruncated: false,
+      bodyBinary: false,
+      bodyError: "",
+      encodedDataLength: null,
+      fromDiskCache: false,
+      fromServiceWorker: false,
+      failed: false,
+      failureReason: "",
+      redirectedTo: "",
+      initiatorType: params.initiator?.type || "",
+      frames: [],
+      frameCount: 0,
+      wsClosed: false
+    };
+    addEntry(source.tabId, entry);
+  }
+
+  if (method === "Network.webSocketWillSendHandshakeRequest") {
+    const entry = state.requestMap.get(params.requestId);
+    if (entry) {
+      entry.requestHeaders = redactHeaders(params.request?.headers || {});
+      entry.timestamp = params.timestamp;
+      entry.wallTime = params.wallTime || null;
+      scheduleNetworkPersist();
+    }
+  }
+
+  if (method === "Network.webSocketHandshakeResponseReceived") {
+    const entry = state.requestMap.get(params.requestId);
+    if (entry) {
+      entry.status = params.response?.status ?? 101;
+      entry.statusText = params.response?.statusText || "Switching Protocols";
+      entry.responseHeaders = redactHeaders(params.response?.headers || {});
+      scheduleNetworkPersist();
+    }
+  }
+
+  if (method === "Network.webSocketFrameSent" || method === "Network.webSocketFrameReceived") {
+    const entry = state.requestMap.get(params.requestId);
+    if (entry) {
+      pushWsFrame(entry, {
+        direction: method === "Network.webSocketFrameSent" ? "sent" : "received",
+        opcode: params.response?.opcode,
+        timestamp: params.timestamp,
+        payload: params.response?.payloadData
+      });
+      scheduleNetworkPersist();
+    }
+  }
+
+  if (method === "Network.webSocketFrameError") {
+    const entry = state.requestMap.get(params.requestId);
+    if (entry) {
+      entry.failed = true;
+      entry.failureReason = params.errorMessage || "websocket frame error";
+      scheduleNetworkPersist();
+    }
+  }
+
+  if (method === "Network.webSocketClosed") {
+    const entry = state.requestMap.get(params.requestId);
+    if (entry) {
+      entry.wsClosed = true;
+      scheduleNetworkPersist();
+    }
+  }
+
+  if (method === "Network.eventSourceMessageReceived") {
+    const entry = state.requestMap.get(params.requestId);
+    if (entry) {
+      if (!entry.type || entry.type === "other") entry.type = "EventSource";
+      pushWsFrame(entry, {
+        direction: "received",
+        eventName: params.eventName || "message",
+        eventId: params.eventId || "",
+        timestamp: params.timestamp,
+        payload: params.data
+      });
+      scheduleNetworkPersist();
+    }
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -556,6 +680,11 @@ function formatLogEntry(entry, includeBody = false) {
     encodedDataLength: entry.encodedDataLength
   };
 
+  if (Array.isArray(entry.frames)) {
+    base.frameCount = entry.frameCount || entry.frames.length;
+    base.wsClosed = entry.wsClosed === true;
+  }
+
   if (includeBody) {
     base.requestHeaders = redactHeaders(entry.requestHeaders || {});
     base.responseHeaders = redactHeaders(entry.responseHeaders || {});
@@ -564,6 +693,7 @@ function formatLogEntry(entry, includeBody = false) {
     base.bodyTruncated = entry.bodyTruncated;
     base.bodyBinary = entry.bodyBinary;
     base.bodyError = entry.bodyError;
+    if (Array.isArray(entry.frames)) base.frames = entry.frames;
   }
 
   return base;

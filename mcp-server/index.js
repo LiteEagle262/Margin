@@ -310,6 +310,62 @@ const TOOLS = [
     description: "List domains that have saved authenticator manual keys. Does not reveal the keys.",
     inputSchema: { type: "object", properties: {} }
   },
+  {
+    name: "http_request",
+    description: "Make an HTTP request from the active page's context so its cookies, session, and origin apply. Use to replay or modify an API call seen in network logs. Returns status, headers, and body. Cross-origin requests are subject to the page's CORS policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Request URL. Relative URLs resolve against the active page." },
+        method: { type: "string", description: "HTTP method. Defaults to GET." },
+        headers: { type: "object", description: "Optional request headers as a key/value object." },
+        body: { type: "string", description: "Optional request body string. Omit for GET/HEAD." },
+        credentials: { type: "string", enum: ["include", "omit", "same-origin"], description: "Whether to send cookies. Defaults to include." },
+        max_response_chars: { type: "number", description: "Maximum response body characters to return. Defaults to 20000." }
+      },
+      required: ["url"]
+    }
+  },
+  {
+    name: "get_cookies",
+    description: "Read cookies for the active tab's site (or a given domain), including httpOnly cookies that page scripts cannot access.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        domain: { type: "string", description: "Optional domain or URL. Defaults to the active tab." },
+        name: { type: "string", description: "Optional cookie name filter." }
+      }
+    }
+  },
+  {
+    name: "get_storage",
+    description: "Read localStorage and/or sessionStorage for the active page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["local", "session", "all"], description: "Which storage to read. Defaults to all." },
+        keys: { type: "array", items: { type: "string" }, description: "Optional list of keys to return. Omit for all keys." }
+      }
+    }
+  },
+  {
+    name: "list_scripts",
+    description: "List JavaScript files loaded by the active page (external, inline, and resource-timing entries).",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "search_scripts",
+    description: "Search the source of the page's loaded JavaScript bundles for a string or regex. Finds API endpoints, GraphQL operations, keys, or flags. Returns matching snippets, not whole bundles.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search term or regex source." },
+        regex: { type: "boolean", description: "Treat query as a case-insensitive regular expression. Defaults to false." },
+        max_matches: { type: "number", description: "Maximum matches to return. Defaults to 30, capped at 200." }
+      },
+      required: ["query"]
+    }
+  },
   ...TEMP_EMAIL_TOOLS
 ];
 
