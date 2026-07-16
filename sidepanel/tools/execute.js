@@ -5,7 +5,7 @@
 import { settings, mcpToolRegistry, mcpConnections, activeToolRunStats } from "../state/store.js";
 import { mcpToolName, parseMcpToolName, connectMcpServer, callMcpTool } from "../api/mcp-client.js";
 import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool } from "../api/tavily.js";
-import { BROWSER_TOOLS, WORKSPACE_TOOLS, WORKSPACE_TOOL_NAMES, WEB_SEARCH_TOOLS } from "./schemas.js";
+import { BROWSER_TOOLS, WORKSPACE_TOOLS, WORKSPACE_TOOL_NAMES, WEB_SEARCH_TOOLS, RECON_TOOLS } from "./schemas.js";
 import { DEFAULT_ENABLED_TOOLS, isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
 import { getMaxToolCalls } from "../settings/sections/agent-limits.js";
 import { executeWorkspaceTool } from "../features/workspace.js";
@@ -71,6 +71,7 @@ export function getAllAgentTools() {
     ...filterEnabledToolSchemas(BROWSER_TOOLS),
     ...filterEnabledToolSchemas(WORKSPACE_TOOLS),
     ...filterEnabledToolSchemas(WEB_SEARCH_TOOLS),
+    ...filterEnabledToolSchemas(RECON_TOOLS),
     ...getMcpToolSchemas()
   ];
 }
