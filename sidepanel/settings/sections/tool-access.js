@@ -21,6 +21,11 @@ const TOOL_ACCESS_GROUPS = [
     tools: ["start_network_capture", "stop_network_capture", "get_network_logs", "get_network_log_detail", "clear_network_logs"]
   },
   {
+    id: "recon",
+    label: "API & recon",
+    tools: ["http_request", "get_cookies", "get_storage", "list_scripts", "search_scripts"]
+  },
+  {
     id: "workspace",
     label: "Workspace files",
     tools: ["write_file", "read_file", "list_files", "search_files", "read_context_item", "get_file_info", "rename_file", "delete_file"]
@@ -72,7 +77,12 @@ const TOOL_LABELS = {
   rename_file: "Rename file",
   delete_file: "Delete file",
   get_authenticator_code: "Authenticator code",
-  list_authenticator_domains: "Authenticator domains"
+  list_authenticator_domains: "Authenticator domains",
+  http_request: "HTTP request",
+  get_cookies: "Read cookies",
+  get_storage: "Read storage",
+  list_scripts: "List scripts",
+  search_scripts: "Search scripts"
 };
 
 export function normalizeToolAccessSettings(raw) {
@@ -160,7 +170,7 @@ function initToolAccessSettings() {
   });
 
   disableRiskyBtn?.addEventListener("click", () => {
-    const risky = new Set(["run_js", "evaluate_script", "navigate", "get_authenticator_code", "delete_file", "rename_file", "clear_network_logs"]);
+    const risky = new Set(["run_js", "evaluate_script", "navigate", "get_authenticator_code", "delete_file", "rename_file", "clear_network_logs", "http_request", "get_cookies", "get_storage"]);
     list?.querySelectorAll(".tool-access-input").forEach((input) => {
       if (risky.has(input.dataset.toolName)) input.checked = false;
     });

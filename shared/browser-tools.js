@@ -634,6 +634,213 @@ async function evaluateScriptFunction(args = {}) {
   return toolOk("evaluate_script", "Script evaluated.", { result: raw });
 }
 
+// Replay/craft an HTTP request from the page's own context so its cookies and
+// origin apply. Returns structured status/headers/body instead of making the
+// model hand-write fetch code via run_js.
+async function httpRequestViaPage(args = {}) {
+  const url = String(args.url || "").trim();
+  if (!url) return toolError("http_request", "missing_url", "http_request requires url.", { recoverable: false });
+  const maxChars = Math.min(Math.max(Number(args.max_response_chars) || 20000, 0), 200000);
+
+  const result = await runScriptInActiveTab(async (input) => {
+    const started = performance.now();
+    try {
+      const method = String(input.method || "GET").toUpperCase();
+      const init = { method, credentials: input.credentials || "include" };
+      if (input.headers && typeof input.headers === "object") init.headers = input.headers;
+      if (input.body != null && method !== "GET" && method !== "HEAD") init.body = String(input.body);
+      const resp = await fetch(input.url, init);
+      const headers = {};
+      resp.headers.forEach((value, key) => { headers[key] = value; });
+      const raw = await resp.text();
+      const truncated = raw.length > input.maxChars;
+      return {
+        status: resp.status,
+        statusText: resp.statusText,
+        final_url: resp.url,
+        redirected: resp.redirected === true,
+        response_headers: headers,
+        body: truncated ? raw.slice(0, input.maxChars) : raw,
+        body_truncated: truncated,
+        body_length: raw.length,
+        timing_ms: Math.round(performance.now() - started)
+      };
+    } catch (err) {
+      return { _error: String((err && err.message) || err), timing_ms: Math.round(performance.now() - started) };
+    }
+  }, [{ url, method: args.method, headers: args.headers, body: args.body, credentials: args.credentials, maxChars }]);
+
+  if (!result) {
+    return toolError("http_request", "execution_failed", "Request could not run in the page context. Ensure a normal web page is the active tab.", { recoverable: false });
+  }
+  if (result._error) {
+    return toolError("http_request", "request_failed", `Request failed: ${result._error}`, {
+      timing_ms: result.timing_ms,
+      next_actions: [{ tool: "http_request", reason: "Adjust URL/headers/body and retry. Cross-origin targets may be blocked by the page's CORS policy." }]
+    });
+  }
+  return toolOk("http_request", `HTTP ${result.status} ${result.statusText} in ${result.timing_ms}ms`, result);
+}
+
+// Read cookies (including httpOnly) via chrome.cookies — only reachable from the
+// background worker, which is where this runs. Page scripts cannot see httpOnly.
+async function getCookiesForTool(args = {}) {
+  let targetUrl = "";
+  if (args.domain) {
+    const raw = String(args.domain).trim();
+    targetUrl = raw.includes("://") ? raw : `https://${raw.replace(/^\/+/, "")}`;
+  } else {
+    const tab = await getActiveTabInfo();
+    targetUrl = tab?.url || "";
+  }
+  if (!targetUrl) return "Error: No domain supplied and no active tab URL available.";
+
+  let normalizedUrl;
+  try {
+    normalizedUrl = new URL(targetUrl).toString();
+  } catch {
+    return `Error: Invalid domain or URL "${targetUrl}".`;
+  }
+
+  const query = { url: normalizedUrl };
+  if (args.name) query.name = String(args.name);
+  const cookies = await chrome.cookies.getAll(query);
+  const mapped = cookies.map((c) => ({
+    name: c.name,
+    value: c.value,
+    domain: c.domain,
+    path: c.path,
+    secure: c.secure === true,
+    httpOnly: c.httpOnly === true,
+    sameSite: c.sameSite || "unspecified",
+    session: c.session === true,
+    expirationDate: c.expirationDate || null
+  }));
+  return JSON.stringify({ url: normalizedUrl, count: mapped.length, cookies: mapped }, null, 2);
+}
+
+async function getStorageForTool(args = {}) {
+  const type = String(args.type || "all").toLowerCase();
+  const keys = Array.isArray(args.keys) ? args.keys.map(String) : null;
+  const result = await runScriptInActiveTab((input) => {
+    function dump(storage) {
+      const out = {};
+      for (let i = 0; i < storage.length; i += 1) {
+        const key = storage.key(i);
+        if (input.keys && !input.keys.includes(key)) continue;
+        out[key] = storage.getItem(key);
+      }
+      return out;
+    }
+    const data = { url: location.href };
+    try {
+      if (input.type === "local" || input.type === "all") data.localStorage = dump(window.localStorage);
+      if (input.type === "session" || input.type === "all") data.sessionStorage = dump(window.sessionStorage);
+    } catch (err) {
+      data.error = String((err && err.message) || err);
+    }
+    return data;
+  }, [{ type, keys }]);
+  if (!result) return "Error: Failed to read page storage.";
+  return JSON.stringify(result, null, 2);
+}
+
+async function listScriptsInPage() {
+  const result = await runScriptInActiveTab(() => {
+    const scripts = [];
+    const seen = new Set();
+    document.querySelectorAll("script").forEach((el) => {
+      const src = el.src || "";
+      if (src) {
+        if (seen.has(src)) return;
+        seen.add(src);
+        scripts.push({ type: "external", url: src });
+      } else if (el.textContent && el.textContent.trim()) {
+        scripts.push({ type: "inline", length: el.textContent.length, preview: el.textContent.trim().slice(0, 120) });
+      }
+    });
+    try {
+      performance.getEntriesByType("resource")
+        .filter((e) => e.initiatorType === "script" || /\.m?js(\?|$)/i.test(e.name))
+        .forEach((e) => {
+          if (seen.has(e.name)) return;
+          seen.add(e.name);
+          scripts.push({ type: "resource", url: e.name, transferSize: e.transferSize || 0 });
+        });
+    } catch {
+      // resource timing may be unavailable
+    }
+    return { url: location.href, count: scripts.length, scripts };
+  });
+  if (!result) return "Error: Failed to list page scripts.";
+  return JSON.stringify(result, null, 2);
+}
+
+// Fetch and grep the page's loaded bundles inside the page so only matching
+// snippets travel back — never whole minified files.
+async function searchScriptsInPage(args = {}) {
+  const query = String(args.query || "");
+  if (!query.trim()) return toolError("search_scripts", "missing_query", "search_scripts requires query.", { recoverable: false });
+  const useRegex = args.regex === true;
+  const maxMatches = Math.min(Math.max(Number(args.max_matches) || 30, 1), 200);
+
+  const result = await runScriptInActiveTab(async (input) => {
+    const urls = new Set();
+    document.querySelectorAll("script[src]").forEach((el) => { if (el.src) urls.add(el.src); });
+    try {
+      performance.getEntriesByType("resource")
+        .filter((e) => e.initiatorType === "script" || /\.m?js(\?|$)/i.test(e.name))
+        .forEach((e) => urls.add(e.name));
+    } catch {
+      // ignore
+    }
+
+    let matcher = null;
+    if (input.useRegex) {
+      try {
+        matcher = new RegExp(input.query, "i");
+      } catch (err) {
+        return { _error: `Invalid regex: ${String((err && err.message) || err)}` };
+      }
+    }
+    const needle = input.query.toLowerCase();
+    const matches = [];
+    const scanned = [];
+    const errors = [];
+
+    for (const url of urls) {
+      if (matches.length >= input.maxMatches) break;
+      let text = "";
+      try {
+        const resp = await fetch(url, { credentials: "include" });
+        if (!resp.ok) { errors.push({ url, error: `HTTP ${resp.status}` }); continue; }
+        text = await resp.text();
+      } catch (err) {
+        errors.push({ url, error: String((err && err.message) || err) });
+        continue;
+      }
+      scanned.push(url);
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length && matches.length < input.maxMatches; i += 1) {
+        const line = lines[i];
+        const idx = matcher ? line.search(matcher) : line.toLowerCase().indexOf(needle);
+        if (idx < 0) continue;
+        // Minified bundles have enormous single lines — return a window only.
+        let snippet = line;
+        if (snippet.length > 400) {
+          snippet = (idx > 200 ? "…" : "") + line.slice(Math.max(0, idx - 200), idx + 200) + (line.length > idx + 200 ? "…" : "");
+        }
+        matches.push({ url, line: i + 1, column: idx + 1, snippet });
+      }
+    }
+    return { query: input.query, scanned_count: scanned.length, match_count: matches.length, matches, errors: errors.slice(0, 10) };
+  }, [{ query, useRegex, maxMatches }]);
+
+  if (!result) return toolError("search_scripts", "execution_failed", "Script search could not run in the page context.", { recoverable: false });
+  if (result._error) return toolError("search_scripts", "invalid_query", result._error, { recoverable: false });
+  return toolOk("search_scripts", `Found ${result.match_count} match(es) across ${result.scanned_count} script(s).`, result);
+}
+
 export async function executePageTool(name, args = {}) {
   try {
     switch (name) {
@@ -789,6 +996,26 @@ ${domResult.outerHtml}`;
 
       case "evaluate_script": {
         return await evaluateScriptFunction(args);
+      }
+
+      case "http_request": {
+        return await httpRequestViaPage(args);
+      }
+
+      case "get_cookies": {
+        return await getCookiesForTool(args);
+      }
+
+      case "get_storage": {
+        return await getStorageForTool(args);
+      }
+
+      case "list_scripts": {
+        return await listScriptsInPage();
+      }
+
+      case "search_scripts": {
+        return await searchScriptsInPage(args);
       }
 
       case "start_network_capture":
