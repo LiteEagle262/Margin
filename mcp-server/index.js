@@ -15,6 +15,12 @@ import {
   setTempEmailFlags,
   isTempEmailEnabled
 } from "./temp-email.js";
+import {
+  WEB_SEARCH_TOOLS,
+  WEB_SEARCH_TOOL_NAMES,
+  setWebSearchEnabled,
+  isWebSearchEnabled
+} from "./web-search.js";
 
 const DEFAULT_PORT = 9229;
 const DEFAULT_HOST = "127.0.0.1";
@@ -366,13 +372,18 @@ const TOOLS = [
       required: ["query"]
     }
   },
+  ...WEB_SEARCH_TOOLS,
   ...TEMP_EMAIL_TOOLS
 ];
+
+// Tools gated by their own feature flag rather than the toolAccess allowlist.
+const FLAG_GATED_TOOL_NAMES = new Set([...TEMP_EMAIL_TOOL_NAMES, ...WEB_SEARCH_TOOL_NAMES]);
 
 function visibleTools() {
   return TOOLS.filter((tool) => {
     if (TEMP_EMAIL_TOOL_NAMES.has(tool.name) && !isTempEmailEnabled()) return false;
-    if (enabledToolNames && !TEMP_EMAIL_TOOL_NAMES.has(tool.name) && !enabledToolNames.has(tool.name)) return false;
+    if (WEB_SEARCH_TOOL_NAMES.has(tool.name) && !isWebSearchEnabled()) return false;
+    if (enabledToolNames && !FLAG_GATED_TOOL_NAMES.has(tool.name) && !enabledToolNames.has(tool.name)) return false;
     return true;
   });
 }
@@ -441,8 +452,10 @@ function startBridgeServer() {
             ? new Set(entries.filter(([, enabled]) => enabled !== false).map(([name]) => name))
             : null;
         }
+        const webSearch = message.flags.webSearch || {};
+        setWebSearchEnabled(webSearch.enabled === true);
         const after = visibleTools().map((tool) => tool.name).join(",");
-        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, tools=${enabledToolNames ? enabledToolNames.size : "all"})`);
+        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, webSearch.enabled=${isWebSearchEnabled()}, tools=${enabledToolNames ? enabledToolNames.size : "all"})`);
         if ((changed || before !== after) && mcpServer) {
           mcpServer.notification({ method: "notifications/tools/list_changed" })
             .catch(() => { /* client may not support */ });
