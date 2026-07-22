@@ -92,6 +92,12 @@ Use the same `command` + `args` pattern. Point `args` at `index.js` in this fold
 | `scroll_page` | Scroll up/down |
 | `type_text` | Fill an input |
 | `run_js` | Evaluate JavaScript (uses CDP to bypass CSP) |
+| `search_web` | Live web search via the extension's Tavily account* |
+| `fetch_search_result` | Extract readable content from a URL via Tavily* |
+
+\* Web search tools only appear when **Web Search** is enabled and a Tavily API
+key is set in extension settings. The key never leaves the extension — the
+search runs in the browser bridge, not in this server.
 
 ## Troubleshooting
 
