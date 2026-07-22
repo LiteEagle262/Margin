@@ -1,6 +1,6 @@
 import { settings, chats, currentChatId, openRouterModels } from "../state/store.js";
 import { approxTokens, formatTokens } from "../lib/format.js";
-import { isWebSearchAvailable } from "../api/tavily.js";
+import { isWebSearchAvailable } from "../../shared/tavily.js";
 import { getAllAgentTools } from "../tools/execute.js";
 import { getFallbackContextWindow } from "../settings/sections/agent-limits.js";
 
