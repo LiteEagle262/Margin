@@ -17,6 +17,12 @@ import {
   setTempEmailFlags,
   isTempEmailEnabled
 } from "./temp-email.js";
+import {
+  WEB_SEARCH_TOOLS,
+  WEB_SEARCH_TOOL_NAMES,
+  setWebSearchEnabled,
+  isWebSearchEnabled
+} from "./web-search.js";
 
 const DEFAULT_PORT = 9229;
 const DEFAULT_HOST = "127.0.0.1";
@@ -96,6 +102,7 @@ function clearExtensionControlledState() {
   const hadVisibleTools = visibleTools().length > 0;
   enabledToolNames = new Set();
   setTempEmailFlags({ enabled: false, apiUrl: "", apiKey: "" });
+  setWebSearchEnabled(false);
   if (hadVisibleTools && mcpServer) {
     mcpServer.notification({ method: "notifications/tools/list_changed" })
       .catch(() => {});
@@ -434,13 +441,18 @@ const TOOLS = [
       required: ["query"]
     }
   },
+  ...WEB_SEARCH_TOOLS,
   ...TEMP_EMAIL_TOOLS
 ];
+
+// Tools gated by their own feature flag rather than the toolAccess allowlist.
+const FLAG_GATED_TOOL_NAMES = new Set([...TEMP_EMAIL_TOOL_NAMES, ...WEB_SEARCH_TOOL_NAMES]);
 
 function visibleTools() {
   return TOOLS.filter((tool) => {
     if (TEMP_EMAIL_TOOL_NAMES.has(tool.name) && !isTempEmailEnabled()) return false;
-    if (!TEMP_EMAIL_TOOL_NAMES.has(tool.name) && !enabledToolNames.has(tool.name)) return false;
+    if (WEB_SEARCH_TOOL_NAMES.has(tool.name) && !isWebSearchEnabled()) return false;
+    if (!FLAG_GATED_TOOL_NAMES.has(tool.name) && !enabledToolNames.has(tool.name)) return false;
     return true;
   });
 }
@@ -572,8 +584,10 @@ export function startBridgeServer({
             entries.filter(([, enabled]) => enabled === true).map(([name]) => name)
           );
         }
+        const webSearch = message.flags.webSearch || {};
+        setWebSearchEnabled(webSearch.enabled === true);
         const after = visibleTools().map((tool) => tool.name).join(",");
-        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, tools=${enabledToolNames.size})`);
+        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, webSearch.enabled=${isWebSearchEnabled()}, tools=${enabledToolNames.size})`);
         if ((changed || before !== after) && mcpServer) {
           mcpServer.notification({ method: "notifications/tools/list_changed" })
             .catch(() => {});

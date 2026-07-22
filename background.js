@@ -1,4 +1,4 @@
-import { getActiveTabId, executePageTool } from "./shared/browser-tools.js";
+import { getActiveTabId, executePageTool, formatToolResultForMcp } from "./shared/browser-tools.js";
 import { executeNetworkTool, getNetworkLogSnapshot, syncNetworkAutoCapture } from "./shared/network-logs.js";
 import {
   normalizeMcpBridgeSettings,
@@ -15,6 +15,7 @@ import {
   pollOpenAIDeviceAuthorization,
   startOpenAIDeviceAuthorization
 } from "./background/openai-service.js";
+import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool, normalizeWebSearchSettings } from "./shared/tavily.js";
 
 const RECONNECT_DELAY_MS = 3000;
 const KEEPALIVE_ALARM = "margin-bridge-keepalive";
@@ -50,6 +51,8 @@ let toolAccessConfig = {
   enabled: {}
 };
 
+let webSearchConfig = normalizeWebSearchSettings(null);
+
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error("Error setting side panel behavior:", error));
@@ -59,6 +62,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   await loadMcpBridgeConfig();
   await loadTempEmailConfig();
   await loadToolAccessConfig();
+  await loadWebSearchConfig();
   await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
   chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
@@ -68,6 +72,7 @@ chrome.runtime.onStartup.addListener(async () => {
   await loadMcpBridgeConfig();
   await loadTempEmailConfig();
   await loadToolAccessConfig();
+  await loadWebSearchConfig();
   await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
 });
@@ -84,6 +89,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.toolAccess) {
     toolAccessConfig = normalizeToolAccessConfig(changes.toolAccess.newValue);
+    sendFeatureFlagsToBridge();
+  }
+  if (changes.webSearch) {
+    webSearchConfig = normalizeWebSearchSettings(changes.webSearch.newValue);
     sendFeatureFlagsToBridge();
   }
   if (changes.networkCapture) {
@@ -224,6 +233,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
       await loadTempEmailConfig();
       await loadToolAccessConfig();
+      await loadWebSearchConfig();
       sendFeatureFlagsToBridge();
       sendResponse({ ok: true });
     })();
@@ -361,6 +371,11 @@ async function loadToolAccessConfig() {
   toolAccessConfig = normalizeToolAccessConfig(stored.toolAccess);
 }
 
+async function loadWebSearchConfig() {
+  const stored = await chrome.storage.local.get(["webSearch"]);
+  webSearchConfig = normalizeWebSearchSettings(stored.webSearch);
+}
+
 async function syncNetworkAutoCaptureFromStorage() {
   try {
     const stored = await chrome.storage.session.get(["latchedTab"]);
@@ -382,7 +397,12 @@ function sendFeatureFlagsToBridge() {
           apiUrl: tempEmailConfig.apiUrl || "",
           apiKey: tempEmailConfig.apiKey || ""
         },
-        toolAccess: toolAccessConfig
+        toolAccess: toolAccessConfig,
+        // Only advertise availability. The Tavily key stays in the extension;
+        // the bridge runs the search itself when an MCP client calls the tool.
+        webSearch: {
+          enabled: isWebSearchAvailable(webSearchConfig)
+        }
       }
     }));
   } catch (e) {}
@@ -502,7 +522,8 @@ function connectBridge() {
     }
 
     if (message.type === "tool/call" && message.id && message.name) {
-      if (!isStoredToolEnabled(message.name)) {
+      const webSearchAllowed = WEB_SEARCH_TOOL_NAMES.has(message.name) && isWebSearchAvailable(webSearchConfig);
+      if (!webSearchAllowed && !isStoredToolEnabled(message.name)) {
         socket.send(JSON.stringify({
           type: "tool/result",
           id: message.id,
@@ -514,7 +535,9 @@ function connectBridge() {
         return;
       }
       try {
-        const formatted = await requestMcpToolFromPanel(message);
+        const formatted = WEB_SEARCH_TOOL_NAMES.has(message.name)
+          ? formatToolResultForMcp(await executeWebSearchTool(message.name, message.arguments || {}, webSearchConfig))
+          : await requestMcpToolFromPanel(message);
         socket.send(JSON.stringify({
           type: "tool/result",
           id: message.id,
