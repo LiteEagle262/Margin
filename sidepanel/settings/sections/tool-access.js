@@ -1,9 +1,6 @@
-// Settings section: per-tool enable/disable for the built-in agent tools.
-// Owns the canonical list of built-in tool names (DEFAULT_ENABLED_TOOLS),
-// which tool dispatch also checks.
-
 import { settings } from "../../state/store.js";
 import { escapeHtml } from "../../lib/format.js";
+import { showToast } from "../../lib/toast.js";
 
 const TOOL_ACCESS_GROUPS = [
   {
@@ -42,7 +39,36 @@ const TOOL_ACCESS_GROUPS = [
   }
 ];
 
-export const DEFAULT_ENABLED_TOOLS = new Set(TOOL_ACCESS_GROUPS.flatMap(group => group.tools));
+export const BUILT_IN_TOOL_NAMES = new Set(TOOL_ACCESS_GROUPS.flatMap(group => group.tools));
+
+// Sensitive inspection, arbitrary code, credentials, and destructive tools are opt-in.
+const RISKY_DEFAULT_OFF = new Set([
+  "clear_network_logs",
+  "delete_file",
+  "evaluate_script",
+  "get_authenticator_code",
+  "get_cookies",
+  "get_network_log_detail",
+  "get_network_logs",
+  "get_storage",
+  "http_request",
+  "list_authenticator_domains",
+  "list_scripts",
+  "rename_file",
+  "run_js",
+  "search_scripts",
+  "start_network_capture",
+  "stop_network_capture",
+  "take_screenshot",
+]);
+
+const OPTIONAL_PERMISSION_BY_TOOL = new Map([
+  ["get_cookies", "cookies"],
+]);
+
+export const DEFAULT_ENABLED_TOOLS = new Set(
+  [...BUILT_IN_TOOL_NAMES].filter((name) => !RISKY_DEFAULT_OFF.has(name)),
+);
 
 const TOOL_LABELS = {
   take_snapshot: "Page snapshot",
@@ -89,15 +115,17 @@ export function normalizeToolAccessSettings(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
   const enabled = value.enabled && typeof value.enabled === "object" ? value.enabled : {};
   const normalized = {};
-  DEFAULT_ENABLED_TOOLS.forEach((toolName) => {
-    normalized[toolName] = enabled[toolName] !== false;
+  BUILT_IN_TOOL_NAMES.forEach((toolName) => {
+    normalized[toolName] = Object.hasOwn(enabled, toolName)
+      ? enabled[toolName] === true
+      : DEFAULT_ENABLED_TOOLS.has(toolName);
   });
   return { enabled: normalized };
 }
 
 export function isBuiltInToolEnabled(toolName) {
   const access = normalizeToolAccessSettings(settings.toolAccess);
-  return access.enabled[toolName] !== false;
+  return access.enabled[toolName] === true;
 }
 
 function getEnabledBuiltInToolNames() {
@@ -140,7 +168,7 @@ export function renderToolAccessSettings() {
   });
 
   if (badge) {
-    const total = DEFAULT_ENABLED_TOOLS.size;
+    const total = BUILT_IN_TOOL_NAMES.size;
     const enabled = getEnabledBuiltInToolNames().length;
     badge.textContent = enabled === total ? "All on" : `${enabled}/${total} on`;
     badge.className = enabled === total ? "mcp-bridge-badge connected" : "mcp-bridge-badge pending";
@@ -151,9 +179,9 @@ function collectToolAccessFromUI() {
   const list = document.getElementById("tool-access-list");
   if (!list) return normalizeToolAccessSettings(settings.toolAccess);
   const enabled = {};
-  DEFAULT_ENABLED_TOOLS.forEach((toolName) => {
+  BUILT_IN_TOOL_NAMES.forEach((toolName) => {
     const input = list.querySelector(`.tool-access-input[data-tool-name="${CSS.escape(toolName)}"]`);
-    enabled[toolName] = input ? input.checked === true : true;
+    enabled[toolName] = input ? input.checked === true : DEFAULT_ENABLED_TOOLS.has(toolName);
   });
   return normalizeToolAccessSettings({ enabled });
 }
@@ -163,14 +191,23 @@ function initToolAccessSettings() {
   const disableRiskyBtn = document.getElementById("disable-risky-tools-btn");
   const list = document.getElementById("tool-access-list");
 
-  enableAllBtn?.addEventListener("click", () => {
-    list?.querySelectorAll(".tool-access-input").forEach((input) => { input.checked = true; });
+  enableAllBtn?.addEventListener("click", async () => {
+    const optionalPermissions = [...new Set(OPTIONAL_PERMISSION_BY_TOOL.values())];
+    const granted = await chrome.permissions.request({ permissions: optionalPermissions });
+    list?.querySelectorAll(".tool-access-input").forEach((input) => {
+      const needsOptionalPermission = OPTIONAL_PERMISSION_BY_TOOL.has(input.dataset.toolName);
+      input.checked = granted || !needsOptionalPermission;
+    });
+    if (!granted) {
+      showToast("Optional cookie access was not granted; cookie inspection remains off");
+    }
     settings.toolAccess = collectToolAccessFromUI();
     renderToolAccessSettings();
+    list?.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
   disableRiskyBtn?.addEventListener("click", () => {
-    const risky = new Set(["run_js", "evaluate_script", "navigate", "get_authenticator_code", "delete_file", "rename_file", "clear_network_logs", "http_request", "get_cookies", "get_storage"]);
+    const risky = RISKY_DEFAULT_OFF;
     list?.querySelectorAll(".tool-access-input").forEach((input) => {
       if (risky.has(input.dataset.toolName)) input.checked = false;
     });
@@ -178,11 +215,40 @@ function initToolAccessSettings() {
     renderToolAccessSettings();
   });
 
-  list?.addEventListener("change", (event) => {
+  list?.addEventListener("change", async (event) => {
     if (!event.target?.classList?.contains("tool-access-input")) return;
+    const toolName = event.target.dataset.toolName;
+    const permission = OPTIONAL_PERMISSION_BY_TOOL.get(toolName);
+    if (event.target.checked && permission) {
+      const granted = await chrome.permissions.request({ permissions: [permission] });
+      if (!granted) {
+        event.target.checked = false;
+        showToast(`${permission} permission was not granted`);
+      }
+    }
     settings.toolAccess = collectToolAccessFromUI();
     renderToolAccessSettings();
+    // Permission prompts resolve after the original change event reaches autosave.
+    list?.dispatchEvent(new Event("change", { bubbles: true }));
   });
+
+  (async () => {
+    const access = normalizeToolAccessSettings(settings.toolAccess);
+    let changed = false;
+    for (const [toolName, permission] of OPTIONAL_PERMISSION_BY_TOOL) {
+      if (!access.enabled[toolName]) continue;
+      const granted = await chrome.permissions.contains({ permissions: [permission] });
+      if (!granted) {
+        access.enabled[toolName] = false;
+        changed = true;
+      }
+    }
+    if (changed) {
+      settings.toolAccess = access;
+      renderToolAccessSettings();
+      list?.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  })();
 }
 
 export const toolAccessSection = {

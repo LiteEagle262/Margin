@@ -1,5 +1,3 @@
-// Settings section: user-configured MCP servers (cards with name/url/enabled).
-
 import { settings } from "../../state/store.js";
 import { escapeHtml } from "../../lib/format.js";
 import { createMcpServerId, connectMcpServer } from "../../api/mcp-client.js";

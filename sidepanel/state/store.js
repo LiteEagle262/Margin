@@ -1,12 +1,6 @@
-// sidepanel/state/store.js - Central app state.
-//
-// Consumers import the live bindings and read them directly; ES module live
-// bindings mean reads always see the current value. Mutating an object's
-// properties is fine from anywhere, but REASSIGNING a top-level value must go
-// through its set* function here so the swap is visible to every module and
-// subscribers get notified.
+import { isSafeVirtualPath, safeRecord } from "../lib/safe-record.js";
 
-const listeners = new Map(); // key -> Set<fn>
+const listeners = new Map();
 
 export function subscribe(key, fn) {
   if (!listeners.has(key)) listeners.set(key, new Set());
@@ -26,8 +20,19 @@ function emit(key) {
   }
 }
 
-// ---- Settings (placeholder shape until loadSettings() normalizes from storage)
 export let settings = {
+  aiProvider: "openrouter",
+  providerConfigs: {
+    openrouter: {
+      apiKey: "",
+      model: "anthropic/claude-3.5-sonnet"
+    },
+    openai: {
+      apiKey: "",
+      model: "gpt-5.6-sol"
+    }
+  },
+  dataSharingConsent: false,
   apiKey: "",
   model: "anthropic/claude-3.5-sonnet",
   systemPrompt: "",
@@ -80,12 +85,14 @@ export function setSettings(next) {
   emit("settings");
 }
 
-// ---- Chats
-export let chats = {};            // { [chatId]: { id, title, messages: [], files: {}, timestamp } }
-export let currentChatId = null;  // The ID of the active chat session
+export let chats = {};
+export let currentChatId = null;
 
 export function setChats(next) {
-  chats = next;
+  chats = safeRecord(next);
+  for (const chat of Object.values(chats)) {
+    if (chat && typeof chat === "object") chat.files = safeRecord(chat.files, isSafeVirtualPath);
+  }
   emit("chats");
 }
 
@@ -94,42 +101,43 @@ export function setCurrentChatId(id) {
   emit("currentChatId");
 }
 
-// ---- Workspace files
-export let globalWorkspace = {};  // { [path]: { path, content, language, description, updatedAt, chatId } }
+export let globalWorkspace = {};
 
 export function setGlobalWorkspace(next) {
-  globalWorkspace = next;
+  globalWorkspace = safeRecord(next, isSafeVirtualPath);
   emit("globalWorkspace");
 }
 
-// ---- Composer attachments
-export let uploadedAttachments = []; // Files queued for the next manual message
+export let uploadedAttachments = [];
 
 export function setUploadedAttachments(next) {
   uploadedAttachments = next;
   emit("uploadedAttachments");
 }
 
-// ---- Agent run lifecycle
 export let isAgentRunning = false;
 export let agentStopRequested = false;
 export let agentAbortController = null;
 export let activeToolRunStats = null;
+export let activeAgentChatId = null;
 
-export function beginAgentRunState() {
+export function beginAgentRunState(chatId = currentChatId) {
   isAgentRunning = true;
   agentStopRequested = false;
+  activeAgentChatId = chatId || null;
   agentAbortController = new AbortController();
   activeToolRunStats = {
     failures: {},
     readOnlyCalls: {},
-    browserToolCount: 0
+    toolCallCount: 0
   };
   emit("agentRun");
 }
 
 export function endAgentRunState() {
   isAgentRunning = false;
+  agentStopRequested = false;
+  activeAgentChatId = null;
   agentAbortController = null;
   activeToolRunStats = null;
   emit("agentRun");
@@ -140,7 +148,6 @@ export function requestAgentStop() {
   emit("agentRun");
 }
 
-// ---- OpenRouter caches
 export let openRouterModels = [];
 export let openRouterModelsLoading = false;
 export let openRouterEndpoints = [];
@@ -164,6 +171,5 @@ export function setOpenRouterEndpointsLoading(next) {
   openRouterEndpointsLoading = next;
 }
 
-// ---- MCP connections
-export const mcpToolRegistry = new Map(); // toolName -> { serverId, serverName, originalName, schema }
-export const mcpConnections = new Map();  // serverId -> { sessionId, tools, server }
+export const mcpToolRegistry = new Map();
+export const mcpConnections = new Map();

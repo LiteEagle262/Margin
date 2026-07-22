@@ -1,6 +1,3 @@
-// sidepanel/features/chat-export.js - Chat export (AI handoff context +
-// raw provenance), workspace export, and raw chat import.
-
 import { settings, chats, currentChatId, globalWorkspace, setCurrentChatId } from "../state/store.js";
 import { saveChats } from "../state/persistence.js";
 import { approxTokens, formatTokens, formatCost, formatBytes, prettyPrint } from "../lib/format.js";
@@ -8,20 +5,17 @@ import { downloadTextFile } from "../lib/download.js";
 import { showToast } from "../lib/toast.js";
 import { buildProviderPreferences } from "../settings/sections/provider-routing.js";
 import { buildReasoningPreferences } from "../settings/sections/reasoning.js";
+import { fetchProviderChatCompletion, getProviderLabel } from "../api/provider.js";
 import { getAttachmentKind, getActiveModelInfo, CONTEXT_PACKING } from "../agent/context.js";
 import { computeContextBreakdown, recordUsage } from "../ui/usage-bar.js";
 import { renderChatHistory } from "../ui/chat-view.js";
 import { renderHistoryList } from "../ui/history-drawer.js";
 import { switchView } from "../ui/navigation.js";
 import { saveGlobalWorkspace } from "./workspace.js";
+import { isSafeRecordKey, isSafeVirtualPath } from "../lib/safe-record.js";
 
-// ----------------------------------------------------
-// CHAT EXPORT: AI HANDOFF CONTEXT + RAW PROVENANCE
-// ----------------------------------------------------
 const EXPORT_TOOL_FULL_RESULT_LIMIT = 12000;
 const EXPORT_TOOL_SUMMARY_LIMIT = 900;
-// Per-result cap used only when building the FULL input handed to the
-// summarizer model (the on-disk .md keeps the smaller, readable limits above).
 const EXPORT_SUMMARY_TOOL_RESULT_LIMIT = 24000;
 const EXPORT_FULL_TOOL_NAMES = new Set([
   "write_file", "read_file", "get_file_info", "read_context_item",
@@ -147,9 +141,6 @@ function shouldExportFullToolResult(toolName, resultText, indexFromEnd) {
 function formatToolResultForExport(call, indexFromEnd, full = false) {
   const resultText = String(call.result?.content || "");
   if (!resultText) return "No stored result.";
-  // Full mode (summarizer input): keep every tool result verbatim up to a
-  // generous per-result cap, including otherwise-noisy tools, so the model can
-  // mine captured details (endpoints, payloads, ids).
   if (full) {
     return truncateForExport(resultText, EXPORT_SUMMARY_TOOL_RESULT_LIMIT, `${call.name} result`);
   }
@@ -249,9 +240,6 @@ function buildWorkspaceMarkdown(chat) {
 }
 
 function buildSummaryInputForModel(chat) {
-  // The summarizer runs on the same model as the chat, so the full conversation
-  // is fed in (no global slice). Builders run in "full" mode to keep message
-  // text and tool results verbatim rather than the readable .md trims.
   const sections = [
     `Chat title: ${chat.title || "New Chat"}`,
     `Model: ${settings.model || "unknown"}`,
@@ -270,9 +258,6 @@ function buildSummaryInputForModel(chat) {
   return sections.join("\n");
 }
 
-// Reserve output room inside the model's context window so feeding the whole
-// chat in can't crowd out the summary. Returns a max_tokens that leaves the
-// input plus overhead inside the window, capped to a sane ceiling.
 function computeSummaryMaxTokens(inputText) {
   const model = getActiveModelInfo();
   const window = Number(model.contextWindow) || 0;
@@ -287,8 +272,8 @@ function computeSummaryMaxTokens(inputText) {
 }
 
 async function generateAiHandoffSummary(chat) {
-  if (!settings.apiKey) {
-    throw new Error("OpenRouter API key is not configured.");
+  if (settings.aiProvider === "openrouter" && !settings.apiKey) {
+    throw new Error(`${getProviderLabel(settings.aiProvider)} key is not configured.`);
   }
   const activeModel = settings.model;
   if (!activeModel) {
@@ -296,24 +281,22 @@ async function generateAiHandoffSummary(chat) {
   }
 
   const summaryInput = buildSummaryInputForModel(chat);
+  const summaryInstructions = [
+    "You write a COMPREHENSIVE handoff document so a fresh AI chat can continue this work seamlessly, with no access to the original conversation.",
+    "CRITICAL: This is NOT a chat recap. Never narrate the conversation turn by turn. The input is numbered source material to mine for facts — do not echo those turns back. Organize your output by TOPIC under the required sections, never by message order. Skip pleasantries, retries, and back-and-forth.",
+    "Do not attribute facts to turns or speakers. State each fact directly as standalone knowledge.",
+    "Capture every essential realization and detail. Prefer completeness over brevity.",
+    "Preserve verbatim any supplied or executed code, the user's explicit constraints, and concrete technical details such as URLs, payloads, IDs, selectors, and file paths.",
+    "Organize as Markdown with these sections: ## Goal & Scope, ## User Requirements, ## Current State, ## Everything Learned, ## Code & Commands, ## Decisions & Rationale, ## Artifacts & Files, ## Dead Ends & What Failed, ## Blockers & Open Questions, ## Exact Next Steps.",
+    "Do not invent facts. State uncertainty explicitly. Write so someone can resume from this document alone.",
+  ].join(" ");
 
   const requestBody = {
     model: activeModel,
     messages: [
       {
         role: "system",
-        content: [
-          "You write a COMPREHENSIVE handoff document so a fresh AI chat can continue this work seamlessly, with no access to the original conversation.",
-          "CRITICAL: This is NOT a chat recap. Never narrate the conversation turn by turn. The input is numbered source material to mine for facts — do not echo those turns back. Organize your output by TOPIC under the required sections, never by message order. Skip pleasantries, retries, and back-and-forth.",
-          "Do not attribute facts to turns or speakers (no 'in turn 4 the user asked...', no 'the assistant then ran...'). State each fact directly as standalone knowledge.",
-          "Capture every essential realization and detail. Prefer completeness over brevity — it is better to include too much than to drop something the next chat would need.",
-          "Preserve these VERBATIM, never paraphrased or summarized: (1) any code, scripts, or commands the user supplied OR that were executed in tool calls — copy the full code, including the exact arguments passed to each tool; (2) the user's explicit requirements, constraints, preferences, and instructions, in their own words; (3) concrete technical specifics — URLs/endpoints, HTTP methods, request/response payload shapes, headers, parameters, IDs, selectors, file paths.",
-          "When code or a tool invocation matters, reproduce the actual code/arguments in a fenced block rather than describing what it did.",
-          "Organize as Markdown with these sections: ## Goal & Scope, ## User Requirements (verbatim constraints, preferences, must-haves), ## Current State, ## Everything Learned (concrete facts, API details, payloads — verbatim), ## Code & Commands, ## Decisions & Rationale, ## Artifacts & Files, ## Dead Ends & What Failed (so the next chat does not repeat them), ## Blockers & Open Questions, ## Exact Next Steps.",
-          "In ## Code & Commands, YOU decide which tool activity matters. The next chat cannot see any tool calls, so reproduce verbatim, in fenced blocks, the code, scripts, queries, and tool-call arguments that are worth keeping — especially code run to test or accomplish something that worked, or that the next chat would need to re-run or build on. Omit routine, failed, or throwaway calls. Do not include a transcript of tool calls; include only the code/commands themselves with a one-line note on what each is for.",
-          "Do not invent facts. If something is unknown or uncertain, say so explicitly rather than guessing.",
-          "Write so that someone could resume the task from this document alone."
-        ].join(" ")
+        content: summaryInstructions
       },
       {
         role: "user",
@@ -330,23 +313,12 @@ async function generateAiHandoffSummary(chat) {
   if (providerPreferences) requestBody.provider = providerPreferences;
   if (reasoningPreferences) requestBody.reasoning = reasoningPreferences;
 
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${settings.apiKey}`,
-      "HTTP-Referer": "https://github.com/scrapeflow",
-      "X-Title": "ScrapeFlow Chat Export"
-    },
-    body: JSON.stringify(requestBody)
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`OpenRouter Error (${response.status}): ${errText}`);
-  }
-
-  const data = await response.json();
+  const data = await fetchProviderChatCompletion(
+    settings.aiProvider,
+    settings.apiKey,
+    requestBody,
+    { appTitle: "Margin Chat Export", sessionId: `margin-export-${crypto.randomUUID()}` },
+  );
   if (data.usage) {
     recordUsage(data.usage);
     await saveChats();
@@ -356,7 +328,7 @@ async function generateAiHandoffSummary(chat) {
 
 function buildRawChatExport(chat) {
   return {
-    exportType: "scrapeflow-chat-raw",
+    exportType: "margin-chat-raw",
     exportedAt: new Date().toISOString(),
     currentChatId,
     model: settings.model || "",
@@ -367,7 +339,7 @@ function buildRawChatExport(chat) {
 function buildGlobalWorkspaceExport() {
   const files = Object.values(globalWorkspace || {});
   return {
-    exportType: "scrapeflow-global-workspace",
+    exportType: "margin-global-workspace",
     exportedAt: new Date().toISOString(),
     fileCount: files.length,
     files: globalWorkspace || {}
@@ -382,13 +354,13 @@ export function exportGlobalWorkspace() {
   }
 
   const rawJson = JSON.stringify(buildGlobalWorkspaceExport(), null, 2);
-  downloadTextFile("scrapeflow-global-workspace.json", rawJson, "application/json;charset=utf-8");
+  downloadTextFile("margin-global-workspace.json", rawJson, "application/json;charset=utf-8");
   showToast(`Exported ${files.length} workspace file${files.length === 1 ? "" : "s"}.`);
 }
 
 function makeUniqueImportedChatId(originalId) {
   const base = String(originalId || Date.now());
-  if (!chats[base]) return base;
+  if (isSafeRecordKey(base) && !chats[base]) return base;
 
   let candidate = `${Date.now()}`;
   while (chats[candidate]) {
@@ -401,8 +373,8 @@ function normalizeImportedChat(raw) {
   if (!raw || typeof raw !== "object") {
     throw new Error("Import file is not a JSON object.");
   }
-  if (raw.exportType !== "scrapeflow-chat-raw") {
-    throw new Error("This is not a ScrapeFlow raw chat export.");
+  if (raw.exportType !== "margin-chat-raw") {
+    throw new Error("This is not a Margin raw chat export.");
   }
   const sourceChat = raw.chat;
   if (!sourceChat || typeof sourceChat !== "object") {
@@ -419,7 +391,7 @@ function normalizeImportedChat(raw) {
     : {};
   const files = Object.fromEntries(
     Object.entries(rawFiles)
-      .filter(([path, fileRecord]) => path && fileRecord && typeof fileRecord === "object")
+      .filter(([path, fileRecord]) => isSafeVirtualPath(path) && fileRecord && typeof fileRecord === "object")
       .map(([path, fileRecord]) => [path, { ...fileRecord, path: fileRecord.path || path, chatId: id }])
   );
 
@@ -451,7 +423,7 @@ export async function importRawChatFile(file) {
     setCurrentChatId(importedChat.id);
 
     Object.entries(importedChat.files || {}).forEach(([path, fileRecord]) => {
-      if (!fileRecord || typeof fileRecord !== "object") return;
+      if (!isSafeVirtualPath(path) || !fileRecord || typeof fileRecord !== "object") return;
       if (!globalWorkspace[path] || (fileRecord.updatedAt || 0) >= (globalWorkspace[path].updatedAt || 0)) {
         globalWorkspace[path] = { ...fileRecord, chatId: importedChat.id };
       }
@@ -488,11 +460,11 @@ function buildContextMarkdownExport(chat, handoffSummary, summaryError = "") {
     : [
         "AI-generated summary unavailable.",
         summaryError ? `Reason: ${summaryError}` : "",
-        "Use the companion raw JSON export for the full chat, tool calls, and provenance."
+        "Use the paired raw JSON export for the full chat, tool calls, and provenance."
       ].filter(Boolean).join("\n");
 
   return [
-    "# ScrapeFlow Chat Context Export",
+    "# Margin Chat Context Export",
     "",
     "## Metadata",
     metadata.join("\n"),
@@ -504,7 +476,7 @@ function buildContextMarkdownExport(chat, handoffSummary, summaryError = "") {
     buildWorkspaceMarkdown(chat),
     "",
     "## Raw Export Note",
-    "This document is an AI-generated handoff. The companion JSON export preserves the complete stored chat object, full transcript, tool calls and results, attachments, and files attached to this chat. Export the global workspace separately from Settings."
+    "This document is an AI-generated handoff. The paired JSON export preserves the complete stored chat object, full transcript, tool calls and results, attachments, and files attached to this chat. Export the global workspace separately from Settings."
   ].join("\n");
 }
 
@@ -524,9 +496,12 @@ export async function exportCurrentChatForContext() {
   let summary = "";
   let summaryError = "";
   try {
-    if (!settings.apiKey) {
-      summaryError = "OpenRouter API key is not configured.";
-      showToast("Exporting without AI summary. Add an OpenRouter key for summaries.");
+    if (!settings.dataSharingConsent) {
+      summaryError = "Provider-processing consent is not enabled.";
+      showToast("Exporting without AI summary. Accept provider processing to generate summaries.");
+    } else if (settings.aiProvider === "openrouter" && !settings.apiKey) {
+      summaryError = `${getProviderLabel(settings.aiProvider)} key is not configured.`;
+      showToast("Exporting without AI summary. Add a provider key for summaries.");
     } else {
       showToast("Generating chat handoff summary...");
       summary = await generateAiHandoffSummary(chat);
@@ -540,8 +515,8 @@ export async function exportCurrentChatForContext() {
   try {
     const markdown = buildContextMarkdownExport(chat, summary, summaryError);
     const rawJson = JSON.stringify(buildRawChatExport(chat), null, 2);
-    downloadTextFile("scrapeflow-chat-context.md", markdown, "text/markdown;charset=utf-8");
-    downloadTextFile("scrapeflow-chat-raw.json", rawJson, "application/json;charset=utf-8");
+    downloadTextFile("margin-chat-context.md", markdown, "text/markdown;charset=utf-8");
+    downloadTextFile("margin-chat-raw.json", rawJson, "application/json;charset=utf-8");
     showToast("Chat context exported.");
   } catch (err) {
     console.error("Could not export chat:", err);

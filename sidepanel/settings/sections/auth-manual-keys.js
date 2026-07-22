@@ -1,5 +1,3 @@
-// Settings section: per-domain TOTP manual keys for get_authenticator_code.
-
 import { settings } from "../../state/store.js";
 import { escapeHtml } from "../../lib/format.js";
 import { showToast } from "../../lib/toast.js";
@@ -56,7 +54,11 @@ function createAuthManualKeyRow(domain = "", manualKey = "") {
     <input type="password" class="auth-secret-input" placeholder="manual key" value="${escapeHtml(manualKey)}" autocomplete="off">
     <button type="button" class="mcp-remove-btn auth-remove-btn">Remove</button>
   `;
-  row.querySelector(".auth-remove-btn")?.addEventListener("click", () => row.remove());
+  row.querySelector(".auth-remove-btn")?.addEventListener("click", () => {
+    const list = row.parentElement;
+    row.remove();
+    list?.dispatchEvent(new Event("change", { bubbles: true }));
+  });
   return row;
 }
 
@@ -104,6 +106,7 @@ function addAuthManualKeyRow(domain = "", manualKey = "") {
   if (!list) return;
   if (!list.querySelector(".auth-key-row")) list.innerHTML = "";
   list.appendChild(createAuthManualKeyRow(domain, manualKey));
+  list.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function initAuthManualKeySettings() {

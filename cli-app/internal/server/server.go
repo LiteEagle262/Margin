@@ -1,40 +1,43 @@
 package server
 
 import (
-	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"cli-app/internal/codex"
 	"cli-app/internal/config"
 	"cli-app/internal/workspace"
 
 	"github.com/gorilla/websocket"
 )
 
-const toolTimeout = 120 * time.Second
+const (
+	toolTimeout         = 120 * time.Second
+	registrationTimeout = 10 * time.Second
+	connectionTimeout   = 90 * time.Second
+	maxClientMessage    = 24 << 20
+)
 
 var upgrader = websocket.Upgrader{
+	HandshakeTimeout: 10 * time.Second,
 	CheckOrigin: func(r *http.Request) bool {
-		return true // localhost-only enforced at TCP layer
+		return isAllowedWebSocketOrigin(r)
 	},
 }
 
 type Bridge struct {
-	cfg       config.Config
-	ws        *workspace.Workspace
-	client    *websocket.Conn
-	clientMu  sync.Mutex
-	pending   map[string]chan toolResponse
-	pendingMu sync.Mutex
-	codex     *codex.Client
+	cfg      config.Config
+	ws       *workspace.Workspace
+	client   *websocket.Conn
+	clientMu sync.Mutex
 }
 
 type toolResponse struct {
@@ -55,9 +58,6 @@ type inboundMessage struct {
 	Client    string          `json:"client"`
 	Version   string          `json:"version"`
 	Arguments json.RawMessage `json:"arguments"`
-	ChatID    string          `json:"chatId"`
-	Text      string          `json:"text"`
-	Images    []string        `json:"images"`
 }
 
 type outboundMessage struct {
@@ -67,9 +67,6 @@ type outboundMessage struct {
 	Workspace string      `json:"workspace,omitempty"`
 	Port      int         `json:"port,omitempty"`
 	Result    *toolResult `json:"result,omitempty"`
-	Mode      string      `json:"mode,omitempty"`
-	Codex     bool        `json:"codex,omitempty"`
-	Event     any         `json:"event,omitempty"`
 }
 
 type toolResult struct {
@@ -78,45 +75,31 @@ type toolResult struct {
 }
 
 func New(cfg config.Config) (*Bridge, error) {
+	cfg.AuthToken = strings.TrimSpace(cfg.AuthToken)
+	if err := config.ValidateAuthToken(cfg.AuthToken); err != nil {
+		return nil, fmt.Errorf("invalid auth token: %w; run `margin-cli init` or replace it with `margin-cli auth <token>`", err)
+	}
+	if !isLoopbackHost(cfg.Host) {
+		return nil, fmt.Errorf("bridge host must resolve to a loopback address")
+	}
 	ws, err := workspace.New(cfg.WorkspaceRoot)
 	if err != nil {
 		return nil, err
 	}
 	return &Bridge{
-		cfg:     cfg,
-		ws:      ws,
-		pending: make(map[string]chan toolResponse),
+		cfg: cfg,
+		ws:  ws,
 	}, nil
 }
 
 func (b *Bridge) ListenAndServe() error {
-	if b.cfg.Mode == "codex" {
-		b.codex = codex.New(
-			b.cfg.CodexCommand,
-			b.cfg.WorkspaceRoot,
-			b.cfg.CodexModel,
-			b.cfg.CodexSandbox,
-			b.cfg.CodexApproval,
-			b.forwardCodexEvent,
-		)
-		if err := b.codex.Start(context.Background()); err != nil {
-			return err
-		}
-		defer b.codex.Close()
-		log.Printf("[scrapeflow-cli] Codex proxy enabled")
-	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", b.handleWS)
 
 	addr := fmt.Sprintf("%s:%d", b.cfg.Host, b.cfg.Port)
-	log.Printf("[scrapeflow-cli] Bridge listening on ws://%s", addr)
-	log.Printf("[scrapeflow-cli] Workspace: %s", b.cfg.WorkspaceRoot)
-	if b.cfg.AuthToken != "" {
-		log.Printf("[scrapeflow-cli] Auth token required for extension connections")
-	} else {
-		log.Printf("[scrapeflow-cli] No auth token set — connections are open on localhost")
-	}
+	log.Printf("[margin-cli] Bridge listening on ws://%s", addr)
+	log.Printf("[margin-cli] Workspace: %s", b.cfg.WorkspaceRoot)
+	log.Printf("[margin-cli] Auth token required for extension connections")
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -126,10 +109,6 @@ func (b *Bridge) ListenAndServe() error {
 }
 
 func (b *Bridge) handleWS(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
 	remote := r.RemoteAddr
 	if idx := strings.LastIndex(remote, ":"); idx != -1 {
 		remote = remote[:idx]
@@ -138,7 +117,7 @@ func (b *Bridge) handleWS(w http.ResponseWriter, r *http.Request) {
 	remote = strings.TrimSuffix(remote, "]")
 
 	if !isLocalhost(remote) {
-		log.Printf("[scrapeflow-cli] Rejected connection from %s", remote)
+		log.Printf("[margin-cli] Rejected connection from %s", remote)
 		http.Error(w, "Only localhost connections are allowed", http.StatusForbidden)
 		return
 	}
@@ -147,42 +126,57 @@ func (b *Bridge) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	defer conn.Close()
+	defer b.onDisconnect(conn)
 
-	conn.SetReadLimit(1 << 20)
+	conn.SetReadLimit(maxClientMessage)
+	if err := conn.SetReadDeadline(time.Now().Add(registrationTimeout)); err != nil {
+		return
+	}
+	authenticated := false
 
 	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		if !authenticated {
+			return nil
+		}
+		return conn.SetReadDeadline(time.Now().Add(connectionTimeout))
 	})
-
-	go b.pingLoop(conn)
 
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
-			b.onDisconnect(conn)
 			return
 		}
 
 		var msg inboundMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
+			b.rejectConnection(conn, "A valid register message is required")
+			return
+		}
+
+		if !authenticated {
+			if msg.Type != "register" {
+				b.rejectConnection(conn, "Register with a valid auth token before sending commands")
+				return
+			}
+			if !b.handleRegister(conn, msg) {
+				return
+			}
+			authenticated = true
+			if err := conn.SetReadDeadline(time.Now().Add(connectionTimeout)); err != nil {
+				return
+			}
+			go b.pingLoop(conn)
 			continue
 		}
 
 		switch msg.Type {
 		case "register":
-			b.handleRegister(conn, msg)
+			b.rejectConnection(conn, "Connection is already registered")
+			return
 		case "tool/call":
 			go b.handleToolCall(conn, msg)
-		case "codex/message":
-			go b.handleCodexMessage(conn, msg)
-		case "codex/interrupt":
-			go b.handleCodexInterrupt(conn, msg)
-		case "codex/reset":
-			if b.codex != nil {
-				b.codex.Reset(msg.ChatID)
-			}
 		case "pong":
-			// handled by pong handler
 		}
 	}
 }
@@ -203,41 +197,57 @@ func (b *Bridge) pingLoop(conn *websocket.Conn) {
 	}
 }
 
-func (b *Bridge) handleRegister(conn *websocket.Conn, msg inboundMessage) {
-	if b.cfg.AuthToken != "" && msg.Token != b.cfg.AuthToken {
-		b.send(conn, outboundMessage{Type: "register/error", Error: "Invalid auth token"})
-		conn.Close()
-		return
+func (b *Bridge) handleRegister(conn *websocket.Conn, msg inboundMessage) bool {
+	if subtle.ConstantTimeCompare([]byte(msg.Token), []byte(b.cfg.AuthToken)) != 1 {
+		b.rejectConnection(conn, "Invalid auth token")
+		return false
 	}
 
 	b.clientMu.Lock()
+	previous := b.client
 	b.client = conn
 	b.clientMu.Unlock()
+	if previous != nil && previous != conn {
+		_ = previous.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Replaced by a new authenticated connection"),
+			time.Now().Add(time.Second),
+		)
+		_ = previous.Close()
+	}
 
 	client := msg.Client
 	if client == "" {
-		client = "scrapeflow-extension"
+		client = "margin-extension"
 	}
 	version := msg.Version
 	if version == "" {
 		version = "unknown"
 	}
-	log.Printf("[scrapeflow-cli] Extension connected (%s %s)", client, version)
+	log.Printf("[margin-cli] Extension connected (%s %s)", client, version)
 
 	b.send(conn, outboundMessage{
 		Type:      "register/ok",
 		Workspace: b.cfg.WorkspaceRoot,
 		Port:      b.cfg.Port,
-		Mode:      b.cfg.Mode,
-		Codex:     b.codex != nil,
 	})
+	return true
+}
+
+func (b *Bridge) rejectConnection(conn *websocket.Conn, reason string) {
+	b.send(conn, outboundMessage{Type: "register/error", Error: reason})
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason),
+		time.Now().Add(time.Second),
+	)
 }
 
 func (b *Bridge) onDisconnect(conn *websocket.Conn) {
 	b.clientMu.Lock()
 	if b.client == conn {
 		b.client = nil
-		log.Printf("[scrapeflow-cli] Extension disconnected")
+		log.Printf("[margin-cli] Extension disconnected")
 	}
 	b.clientMu.Unlock()
 }
@@ -252,44 +262,6 @@ func (b *Bridge) handleToolCall(conn *websocket.Conn, msg inboundMessage) {
 			IsError: result.isError,
 		},
 	})
-}
-
-func (b *Bridge) handleCodexMessage(conn *websocket.Conn, msg inboundMessage) {
-	if b.codex == nil {
-		b.send(conn, outboundMessage{
-			Type:  "codex/error",
-			ID:    msg.ID,
-			Error: "Codex proxy is not enabled. Start the CLI with `serve --mode codex`.",
-		})
-		return
-	}
-	if err := b.codex.Send(msg.ChatID, msg.Text, msg.Images); err != nil {
-		b.send(conn, outboundMessage{Type: "codex/error", ID: msg.ID, Error: err.Error()})
-		return
-	}
-	b.send(conn, outboundMessage{Type: "codex/accepted", ID: msg.ID})
-}
-
-func (b *Bridge) handleCodexInterrupt(conn *websocket.Conn, msg inboundMessage) {
-	if b.codex == nil {
-		b.send(conn, outboundMessage{Type: "codex/error", ID: msg.ID, Error: "Codex proxy is not enabled"})
-		return
-	}
-	if err := b.codex.Interrupt(msg.ChatID); err != nil {
-		b.send(conn, outboundMessage{Type: "codex/error", ID: msg.ID, Error: err.Error()})
-		return
-	}
-	b.send(conn, outboundMessage{Type: "codex/interrupted", ID: msg.ID})
-}
-
-func (b *Bridge) forwardCodexEvent(event map[string]any) {
-	b.clientMu.Lock()
-	conn := b.client
-	b.clientMu.Unlock()
-	if conn == nil {
-		return
-	}
-	b.send(conn, outboundMessage{Type: "codex/event", Event: event})
 }
 
 func (b *Bridge) dispatchTool(name string, args json.RawMessage) toolResponse {
@@ -500,6 +472,35 @@ func (b *Bridge) send(conn *websocket.Conn, msg outboundMessage) {
 
 func isLocalhost(addr string) bool {
 	return addr == "127.0.0.1" || addr == "::1" || addr == "localhost"
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isAllowedWebSocketOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		// Native clients may omit Origin but still require bridge-token authentication.
+		return true
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "chrome-extension" &&
+		parsed.Hostname() != "" &&
+		parsed.Port() == "" &&
+		parsed.User == nil &&
+		parsed.Path == "" &&
+		parsed.RawQuery == "" &&
+		parsed.Fragment == ""
 }
 
 // Tools returns the tool definitions for extension/MCP integration.

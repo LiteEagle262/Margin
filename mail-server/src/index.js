@@ -1,5 +1,4 @@
 import "dotenv/config";
-import crypto from "node:crypto";
 import { openDatabase, deleteExpiredInboxes } from "./db.js";
 import { createHttpApp } from "./http.js";
 import { createSmtpServer } from "./smtp.js";
@@ -8,7 +7,7 @@ const log = (msg) => console.log(`[mail-server] ${msg}`);
 
 const config = {
   domain: required("MAIL_DOMAIN"),
-  apiKey: process.env.API_KEY || generateAndWarnApiKey(),
+  apiKey: required("API_KEY"),
   httpPort: Number(process.env.HTTP_PORT || 8080),
   httpHost: process.env.HTTP_HOST || "0.0.0.0",
   smtpPort: process.env.SMTP_PORT === "" ? null : Number(process.env.SMTP_PORT || 25),
@@ -20,6 +19,11 @@ const config = {
   cleanupIntervalMs: Number(process.env.CLEANUP_INTERVAL_MS || 1000 * 60 * 15)
 };
 
+if (Buffer.byteLength(config.apiKey, "utf8") < 32) {
+  console.error("API_KEY must be at least 32 bytes");
+  process.exit(1);
+}
+
 function required(name) {
   const v = process.env[name];
   if (!v) {
@@ -27,13 +31,6 @@ function required(name) {
     process.exit(1);
   }
   return v;
-}
-
-function generateAndWarnApiKey() {
-  const key = crypto.randomBytes(24).toString("hex");
-  log(`No API_KEY set — generated ephemeral key: ${key}`);
-  log(`Set API_KEY=${key} in your env to keep it stable across restarts.`);
-  return key;
 }
 
 async function main() {
@@ -44,7 +41,8 @@ async function main() {
     apiKey: config.apiKey,
     domain: config.domain,
     defaultTtlMs: config.defaultTtlMs,
-    maxTtlMs: config.maxTtlMs
+    maxTtlMs: config.maxTtlMs,
+    maxMessageBytes: config.maxMessageBytes
   });
 
   app.listen(config.httpPort, config.httpHost, () => {

@@ -61,8 +61,7 @@ func (w *Workspace) Resolve(rel string) (string, error) {
 		return "", ErrOutsideWorkspace
 	}
 
-	// Resolve the nearest existing path so symlinks cannot redirect reads,
-	// writes, deletes, commands, or renames outside the configured workspace.
+	// Resolve the nearest existing path so symlinks cannot escape the workspace.
 	existing := abs
 	for {
 		if _, statErr := os.Lstat(existing); statErr == nil {
@@ -159,7 +158,8 @@ func (w *Workspace) ListFiles(rel string, recursive bool) ([]FileEntry, error) {
 		}
 		relPath = filepath.ToSlash(relPath)
 		if d.IsDir() && strings.HasPrefix(filepath.Base(path), ".") && path != abs {
-			if filepath.Base(path) == ".scrapeflow-cli" {
+			name := filepath.Base(path)
+			if name == ".margin-cli" {
 				return filepath.SkipDir
 			}
 		}

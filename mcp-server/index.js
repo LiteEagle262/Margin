@@ -7,7 +7,9 @@ import {
   ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
 import { WebSocketServer } from "ws";
-import crypto from "crypto";
+import crypto from "node:crypto";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   TEMP_EMAIL_TOOLS,
   TEMP_EMAIL_TOOL_NAMES,
@@ -25,24 +27,91 @@ import {
 const DEFAULT_PORT = 9229;
 const DEFAULT_HOST = "127.0.0.1";
 const TOOL_TIMEOUT_MS = 120000;
+const AUTH_TIMEOUT_MS = 5000;
+const MAX_BRIDGE_PAYLOAD_BYTES = 1024 * 1024;
+const MIN_AUTH_TOKEN_BYTES = 32;
+const CHROME_EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 
-const port = Number(process.env.SCRAPEFLOW_MCP_PORT || DEFAULT_PORT);
-const host = process.env.SCRAPEFLOW_MCP_HOST || DEFAULT_HOST;
-const authToken = process.env.SCRAPEFLOW_MCP_TOKEN || "";
+function readEnv(name, fallback = "") {
+  return Object.prototype.hasOwnProperty.call(process.env, name)
+    ? process.env[name] ?? fallback
+    : fallback;
+}
+
+const port = Number(readEnv("MARGIN_MCP_PORT", String(DEFAULT_PORT)) || DEFAULT_PORT);
+const host = readEnv("MARGIN_MCP_HOST", DEFAULT_HOST) || DEFAULT_HOST;
+const configuredAuthToken = readEnv("MARGIN_MCP_TOKEN");
 
 const pendingCalls = new Map();
 let extensionSocket = null;
 let extensionInfo = null;
 let mcpServer = null;
-let enabledToolNames = null;
+// Expose no tools until the authenticated extension sends its allowlist.
+let enabledToolNames = new Set();
 
 function log(message) {
-  console.error(`[scrapeflow-mcp] ${message}`);
+  console.error(`[margin-mcp] ${message}`);
+}
+
+export function requireBridgeAuthToken(value = configuredAuthToken) {
+  const token = typeof value === "string" ? value.trim() : "";
+  if (Buffer.byteLength(token, "utf8") < MIN_AUTH_TOKEN_BYTES) {
+    throw new Error(
+      "MARGIN_MCP_TOKEN is required and must be at least 32 bytes. Copy the generated token from Margin Settings → MCP Server Connector."
+    );
+  }
+  return token;
+}
+
+export function isLoopbackAddress(address) {
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+export function isAllowedBridgeOrigin(origin) {
+  // Native clients may omit Origin; browsers must present a Chrome-extension origin.
+  if (origin === undefined) return true;
+  return typeof origin === "string" && CHROME_EXTENSION_ORIGIN.test(origin);
+}
+
+export function bridgeTokensMatch(expectedToken, providedToken) {
+  if (typeof expectedToken !== "string" || typeof providedToken !== "string") return false;
+  const expected = Buffer.from(expectedToken, "utf8");
+  const provided = Buffer.from(providedToken, "utf8");
+  return expected.length === provided.length && crypto.timingSafeEqual(expected, provided);
+}
+
+function safeSocketSend(socket, message) {
+  if (socket.readyState !== 1) return;
+  try {
+    socket.send(JSON.stringify(message));
+  } catch {}
+}
+
+function closeWithPolicyError(socket, reason) {
+  safeSocketSend(socket, { type: "register/error", error: reason });
+  socket.close(1008, reason);
+}
+
+function rejectPendingCalls(reason) {
+  for (const pending of pendingCalls.values()) {
+    pending.reject(new Error(reason));
+  }
+}
+
+function clearExtensionControlledState() {
+  const hadVisibleTools = visibleTools().length > 0;
+  enabledToolNames = new Set();
+  setTempEmailFlags({ enabled: false, apiUrl: "", apiKey: "" });
+  setWebSearchEnabled(false);
+  if (hadVisibleTools && mcpServer) {
+    mcpServer.notification({ method: "notifications/tools/list_changed" })
+      .catch(() => {});
+  }
 }
 
 function sendToExtension(message) {
   if (!extensionSocket || extensionSocket.readyState !== 1) {
-    throw new Error("ScrapeFlow extension is not connected. Open Chrome with the extension loaded and enable MCP Server Mode in settings.");
+    throw new Error("Margin extension is not connected. Open Chrome with the extension loaded and enable MCP Server Mode in settings.");
   }
   extensionSocket.send(JSON.stringify(message));
 }
@@ -383,53 +452,116 @@ function visibleTools() {
   return TOOLS.filter((tool) => {
     if (TEMP_EMAIL_TOOL_NAMES.has(tool.name) && !isTempEmailEnabled()) return false;
     if (WEB_SEARCH_TOOL_NAMES.has(tool.name) && !isWebSearchEnabled()) return false;
-    if (enabledToolNames && !FLAG_GATED_TOOL_NAMES.has(tool.name) && !enabledToolNames.has(tool.name)) return false;
+    if (!FLAG_GATED_TOOL_NAMES.has(tool.name) && !enabledToolNames.has(tool.name)) return false;
     return true;
   });
 }
 
-function startBridgeServer() {
-  const wss = new WebSocketServer({ host, port });
+export function startBridgeServer({
+  bridgeHost = host,
+  bridgePort = port,
+  bridgeAuthToken = configuredAuthToken,
+  exitOnError = false
+} = {}) {
+  const requiredAuthToken = requireBridgeAuthToken(bridgeAuthToken);
+  const wss = new WebSocketServer({
+    host: bridgeHost,
+    port: bridgePort,
+    maxPayload: MAX_BRIDGE_PAYLOAD_BYTES,
+    perMessageDeflate: false,
+    verifyClient: (info, accept) => {
+      const remote = info.req.socket.remoteAddress;
+      if (!isLoopbackAddress(remote)) {
+        log(`Rejected non-loopback bridge connection from ${remote || "unknown"}`);
+        accept(false, 403, "Forbidden");
+        return;
+      }
+
+      if (!isAllowedBridgeOrigin(info.origin)) {
+        log("Rejected bridge connection from a non-extension browser origin");
+        accept(false, 403, "Forbidden");
+        return;
+      }
+
+      accept(true);
+    }
+  });
 
   wss.on("listening", () => {
-    log(`Bridge listening on ws://${host}:${port}`);
-    if (authToken) {
-      log("Auth token required for extension connections.");
-    } else {
-      log("No auth token set — extension connections are open on localhost.");
-    }
+    const address = wss.address();
+    const listeningPort = typeof address === "object" && address ? address.port : bridgePort;
+    log(`Bridge listening on ws://${bridgeHost}:${listeningPort}`);
+    log("Auth token required for extension connections.");
   });
 
   wss.on("connection", (socket, request) => {
     const remote = request.socket.remoteAddress;
-    if (remote !== "127.0.0.1" && remote !== "::1" && remote !== "::ffff:127.0.0.1") {
+    if (!isLoopbackAddress(remote)) {
       log(`Rejected connection from ${remote}`);
       socket.close(1008, "Only localhost connections are allowed");
       return;
     }
+
+    let authenticated = false;
+    const authTimer = setTimeout(() => {
+      if (!authenticated) {
+        closeWithPolicyError(socket, "Registration timed out");
+      }
+    }, AUTH_TIMEOUT_MS);
 
     socket.on("message", (raw) => {
       let message;
       try {
         message = JSON.parse(String(raw));
       } catch {
+        socket.close(1003, "Messages must be valid JSON");
+        return;
+      }
+
+      if (!message || typeof message !== "object" || Array.isArray(message)) {
+        socket.close(1003, "Messages must be JSON objects");
+        return;
+      }
+
+      if (!authenticated) {
+        if (message.type !== "register") {
+          closeWithPolicyError(socket, "Registration required");
+          return;
+        }
+
+        if (!bridgeTokensMatch(requiredAuthToken, message.token)) {
+          closeWithPolicyError(socket, "Authentication failed");
+          return;
+        }
+
+        authenticated = true;
+        clearTimeout(authTimer);
+
+        if (extensionSocket && extensionSocket !== socket) {
+          rejectPendingCalls("Margin extension connection was replaced");
+          extensionSocket.close(1012, "Replaced by a new authenticated connection");
+        }
+
+        clearExtensionControlledState();
+        extensionSocket = socket;
+        extensionInfo = {
+          client: typeof message.client === "string" ? message.client.slice(0, 80) : "margin-extension",
+          version: typeof message.version === "string" ? message.version.slice(0, 40) : "unknown"
+        };
+        log(`Extension connected (${extensionInfo.client} ${extensionInfo.version})`);
+        const address = wss.address();
+        const listeningPort = typeof address === "object" && address ? address.port : bridgePort;
+        safeSocketSend(socket, { type: "register/ok", bridgePort: listeningPort });
+        return;
+      }
+
+      if (socket !== extensionSocket) {
+        socket.close(1008, "Connection is no longer active");
         return;
       }
 
       if (message.type === "register") {
-        if (authToken && message.token !== authToken) {
-          socket.send(JSON.stringify({ type: "register/error", error: "Invalid auth token" }));
-          socket.close(1008, "Invalid auth token");
-          return;
-        }
-
-        extensionSocket = socket;
-        extensionInfo = {
-          client: message.client || "scrapeflow-extension",
-          version: message.version || "unknown"
-        };
-        log(`Extension connected (${extensionInfo.client} ${extensionInfo.version})`);
-        socket.send(JSON.stringify({ type: "register/ok", bridgePort: port }));
+        socket.close(1008, "Already registered");
         return;
       }
 
@@ -448,17 +580,17 @@ function startBridgeServer() {
         const access = message.flags.toolAccess;
         if (access?.enabled && typeof access.enabled === "object") {
           const entries = Object.entries(access.enabled);
-          enabledToolNames = entries.length > 0
-            ? new Set(entries.filter(([, enabled]) => enabled !== false).map(([name]) => name))
-            : null;
+          enabledToolNames = new Set(
+            entries.filter(([, enabled]) => enabled === true).map(([name]) => name)
+          );
         }
         const webSearch = message.flags.webSearch || {};
         setWebSearchEnabled(webSearch.enabled === true);
         const after = visibleTools().map((tool) => tool.name).join(",");
-        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, webSearch.enabled=${isWebSearchEnabled()}, tools=${enabledToolNames ? enabledToolNames.size : "all"})`);
+        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, webSearch.enabled=${isWebSearchEnabled()}, tools=${enabledToolNames.size})`);
         if ((changed || before !== after) && mcpServer) {
           mcpServer.notification({ method: "notifications/tools/list_changed" })
-            .catch(() => { /* client may not support */ });
+            .catch(() => {});
         }
         return;
       }
@@ -472,9 +604,12 @@ function startBridgeServer() {
     });
 
     socket.on("close", () => {
+      clearTimeout(authTimer);
       if (extensionSocket === socket) {
         extensionSocket = null;
         extensionInfo = null;
+        rejectPendingCalls("Margin extension disconnected");
+        clearExtensionControlledState();
         log("Extension disconnected");
       }
     });
@@ -486,24 +621,29 @@ function startBridgeServer() {
 
   wss.on("error", (err) => {
     log(`Bridge server error: ${err.message}`);
-    process.exit(1);
+    if (exitOnError) process.exit(1);
   });
 
-  setInterval(() => {
+  const keepAliveTimer = setInterval(() => {
     if (extensionSocket && extensionSocket.readyState === 1) {
       extensionSocket.send(JSON.stringify({ type: "ping" }));
     }
   }, 25000);
 
+  wss.on("close", () => {
+    clearInterval(keepAliveTimer);
+  });
+
   return wss;
 }
 
-async function main() {
-  startBridgeServer();
+export async function main() {
+  const requiredAuthToken = requireBridgeAuthToken();
+  startBridgeServer({ bridgeAuthToken: requiredAuthToken, exitOnError: true });
 
   const server = new Server(
     {
-      name: "scrapeflow-browser",
+      name: "margin-browser",
       version: "1.0.0"
     },
     {
@@ -538,7 +678,7 @@ async function main() {
     if (TEMP_EMAIL_TOOL_NAMES.has(name)) {
       if (!isTempEmailEnabled()) {
         return {
-          content: [{ type: "text", text: "Tool is disabled. Enable Temp Email Backend in the ScrapeFlow extension settings." }],
+          content: [{ type: "text", text: "Tool is disabled. Enable Temp Email Backend in the Margin extension settings." }],
           isError: true
         };
       }
@@ -564,7 +704,13 @@ async function main() {
   log("MCP server ready on stdio");
 }
 
-main().catch((err) => {
-  log(`Fatal error: ${err.message}`);
-  process.exit(1);
-});
+const isEntrypoint = Boolean(
+  process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+);
+
+if (isEntrypoint) {
+  main().catch((err) => {
+    log(`Fatal error: ${err.message}`);
+    process.exitCode = 1;
+  });
+}

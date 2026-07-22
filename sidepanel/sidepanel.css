@@ -1,5 +1,3 @@
-/* sidepanel.css - Flat graphite UI for ScrapeFlow */
-
 :root {
   color-scheme: dark;
   --bg: oklch(0.145 0.004 255);
@@ -46,6 +44,7 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -752,8 +751,6 @@ button {
   30% { opacity: 1; transform: translateY(-3px); }
 }
 
-/* Activity Group: wraps consecutive tool calls so they read as one
-   "process" block instead of dominating the chat. */
 .tool-activity-group {
   display: flex;
   flex-direction: column;
@@ -814,7 +811,6 @@ button {
   gap: 4px;
 }
 
-/* Compact tool card: one row collapsed, expands inline on click. */
 .tool-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -948,8 +944,6 @@ button {
   white-space: pre-wrap;
 }
 
-/* File artifact: the *deliverable* — visually elevated above tool calls so
-   users see what was produced at a glance. Accent left rail + larger name. */
 .file-artifact {
   position: relative;
   border: 1px solid var(--border-strong);
@@ -986,18 +980,25 @@ button {
 .file-artifact-header {
   display: flex;
   align-items: center;
-  gap: 10px;
   width: 100%;
+}
+
+.file-artifact-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
   border: 0;
   background: transparent;
   color: var(--text);
-  padding: 12px 14px 12px 17px;
+  padding: 12px 8px 12px 17px;
   cursor: pointer;
   text-align: left;
   transition: background 140ms ease;
 }
 
-.file-artifact-header:hover {
+.file-artifact-toggle:hover {
   background: var(--bg-hover);
 }
 
@@ -1090,6 +1091,7 @@ button {
   font-size: 11px;
   font-weight: 750;
   cursor: pointer;
+  margin-right: 14px;
 }
 
 .copy-file-btn:hover {
@@ -1249,8 +1251,6 @@ button {
   gap: var(--space-xs);
 }
 
-/* Workspace strip: persistent file index pinned above the chat input.
-   Horizontal-scrolling row of chips — most recently modified first. */
 .workspace-strip {
   display: flex;
   flex-direction: column;
@@ -1307,7 +1307,6 @@ button {
   border-radius: 2px;
 }
 
-/* Empty-state: gentler than the active strip, just a hint of what goes here. */
 .workspace-strip.is-empty {
   border-style: dashed;
   background: transparent;
@@ -1414,7 +1413,6 @@ button {
   background: var(--bg-field);
 }
 
-/* File Viewer Overlay: slides up over the chat area when a chip is clicked. */
 .file-viewer-overlay {
   position: absolute;
   inset: 0;
@@ -1790,7 +1788,6 @@ button {
   white-space: pre;
 }
 
-/* Usage bar: slim row under the input showing the context ring + cost. */
 .usage-bar {
   position: relative;
   display: flex;
@@ -1896,7 +1893,6 @@ button {
   font-weight: 700;
 }
 
-/* Context breakdown tooltip — appears above the ring on hover. */
 .context-tooltip {
   position: absolute;
   bottom: calc(100% + 8px);
@@ -2098,6 +2094,54 @@ button {
   font-weight: 750;
 }
 
+.settings-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.settings-save-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 750;
+}
+
+.settings-save-status::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.settings-save-status[data-state="saving"] {
+  color: var(--warning);
+}
+
+.settings-save-status[data-state="saving"]::before {
+  background: var(--warning);
+}
+
+.settings-save-status[data-state="saved"]::before {
+  background: var(--success);
+}
+
+.settings-save-status[data-state="error"] {
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger), var(--border) 60%);
+}
+
+.settings-save-status[data-state="error"]::before {
+  background: var(--danger);
+}
+
 .back-link-btn {
   display: inline-flex;
   align-items: center;
@@ -2136,6 +2180,121 @@ button {
 .form-group label {
   color: var(--text-soft);
   font-size: 12px;
+  font-weight: 750;
+}
+
+.provider-connection-group {
+  gap: var(--space-sm);
+}
+
+.provider-connection-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+
+.provider-margin-rail {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--text-muted);
+}
+
+.provider-key-warning {
+  color: var(--text-faint);
+}
+
+.provider-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.openai-device-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-field);
+}
+
+.openai-device-code {
+  display: inline-flex;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in oklch, var(--accent) 55%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  user-select: all;
+}
+
+.primary-action-btn {
+  border: 1px solid color-mix(in oklch, var(--accent) 65%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--accent) 18%, var(--bg-field));
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 11.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.primary-action-btn:hover {
+  background: color-mix(in oklch, var(--accent) 26%, var(--bg-field));
+}
+
+.compact-steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.provider-disclosure {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-field);
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-weight: 450 !important;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.provider-disclosure:hover {
+  border-color: var(--border-strong);
+}
+
+.provider-disclosure input {
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.provider-disclosure strong {
+  color: var(--text-soft);
   font-weight: 750;
 }
 
@@ -2540,6 +2699,15 @@ button {
   margin: 8px 0 12px;
 }
 
+.mcp-bridge-toggle input[type="checkbox"] {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 .tool-access-actions {
   display: flex;
   gap: var(--space-xs);
@@ -2611,7 +2779,8 @@ button {
 }
 
 .mcp-bridge-grid input[type="number"],
-.mcp-bridge-grid input[type="text"] {
+.mcp-bridge-grid input[type="text"],
+.mcp-bridge-grid input[type="password"] {
   width: 100%;
   box-sizing: border-box;
 }
@@ -2652,8 +2821,15 @@ button {
 
 .settings-actions {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-xs);
   margin-top: var(--space-xs);
+}
+
+.settings-autosave-copy {
+  color: var(--text-muted);
+  font-size: 11.5px;
 }
 
 .primary-btn,
@@ -2667,7 +2843,6 @@ button {
 }
 
 .primary-btn {
-  flex: 1;
   border: 1px solid var(--text);
   background: var(--text);
   color: var(--bg);
@@ -2848,6 +3023,11 @@ button {
   display: none !important;
 }
 
+:where(button, input, select, textarea, a, [tabindex]):focus-visible {
+  outline: 2px solid #d6a85a;
+  outline-offset: 2px;
+}
+
 @keyframes message-in {
   from {
     opacity: 0;
@@ -2894,7 +3074,7 @@ button {
   }
 
   .settings-actions {
-    flex-direction: column;
+    align-items: stretch;
   }
 
   .provider-routing-controls {
@@ -2929,5 +3109,16 @@ button {
 
   .network-log-type {
     display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

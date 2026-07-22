@@ -1,16 +1,19 @@
 {
-  "name": "scrapeflow-mail-server",
+  "name": "margin-mail-server",
   "version": "1.0.0",
-  "description": "Disposable inbox backend for ScrapeFlow. Receives mail via SMTP or webhook, exposes a REST API used by the MCP server so an AI agent can autonomously sign up to and verify accounts on third-party sites.",
+  "description": "Disposable inbox backend for Margin. Receives mail via SMTP or webhook and exposes a REST API used by the MCP server.",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "check": "node --check src/index.js && node --check src/http.js && node --check src/smtp.js && node --check src/db.js && node --check src/events.js && node --check src/ingest.js",
+    "test": "npm run check && node --test"
   },
   "engines": {
     "node": ">=20"
   },
+  "license": "MIT",
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "dotenv": "^16.4.5",

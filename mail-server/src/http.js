@@ -12,24 +12,28 @@ import { ingestRawMail } from "./ingest.js";
 
 const ADDRESS_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
-export function createHttpApp({ apiKey, domain, defaultTtlMs, maxTtlMs }) {
+export function createHttpApp({ apiKey, domain, defaultTtlMs, maxTtlMs, maxMessageBytes }) {
   const app = express();
   app.disable("x-powered-by");
+  const bodyLimit = normalizeMessageLimit(maxMessageBytes);
 
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: bodyLimit }));
   app.use(
     express.raw({
       type: ["message/rfc822", "application/octet-stream", "text/plain"],
-      limit: "20mb"
+      limit: bodyLimit
     })
   );
 
+  app.use((_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    res.set("Referrer-Policy", "no-referrer");
+    next();
+  });
+
   app.use((req, res, next) => {
     if (req.path === "/healthz") return next();
-    const header = req.header("authorization") || "";
-    const token = header.replace(/^Bearer\s+/i, "").trim();
-    const queryKey = typeof req.query.key === "string" ? req.query.key : "";
-    if (!apiKey || (token !== apiKey && queryKey !== apiKey)) {
+    if (!isBearerAuthorized(apiKey, req.header("authorization"))) {
       return res.status(401).json({ error: "unauthorized" });
     }
     next();
@@ -78,7 +82,7 @@ export function createHttpApp({ apiKey, domain, defaultTtlMs, maxTtlMs }) {
     if (!inbox) return res.status(404).json({ error: "not_found" });
 
     const sinceMs = Number(req.query.since_ms || 0) || 0;
-    const limit = Math.min(Number(req.query.limit || 50) || 50, 200);
+    const limit = Math.max(1, Math.min(Number(req.query.limit || 50) || 50, 200));
     res.json({
       inbox: formatInbox(inbox),
       messages: listMessages(inbox.id, { sinceMs, limit })
@@ -100,7 +104,7 @@ export function createHttpApp({ apiKey, domain, defaultTtlMs, maxTtlMs }) {
     if (!inbox) return res.status(404).json({ error: "not_found" });
 
     const sinceMs = Number(req.query.since_ms || 0) || 0;
-    const timeoutMs = Math.min(Number(req.query.timeout_ms || 30000) || 30000, 120000);
+    const timeoutMs = Math.max(0, Math.min(Number(req.query.timeout_ms || 30000) || 30000, 120000));
 
     const existing = listMessages(inbox.id, { sinceMs, limit: 1 });
     if (existing.length > 0) {
@@ -138,15 +142,36 @@ export function createHttpApp({ apiKey, domain, defaultTtlMs, maxTtlMs }) {
       const result = await ingestRawMail(raw, recipients);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: "ingest_failed", detail: err.message });
+      console.error(`[mail-server] Ingest failed: ${err.message}`);
+      res.status(500).json({ error: "ingest_failed" });
     }
   });
 
   app.use((err, _req, res, _next) => {
-    res.status(500).json({ error: "internal_error", detail: err.message });
+    if (err?.type === "entity.too.large") {
+      return res.status(413).json({ error: "request_too_large" });
+    }
+    console.error(`[mail-server] HTTP error: ${err?.message || "unknown error"}`);
+    res.status(500).json({ error: "internal_error" });
   });
 
   return app;
+}
+
+export function tokensMatch(expectedToken, providedToken) {
+  const expected = Buffer.from(String(expectedToken || ""));
+  const provided = Buffer.from(String(providedToken || ""));
+  return expected.length === provided.length && crypto.timingSafeEqual(expected, provided);
+}
+
+export function isBearerAuthorized(expectedToken, authorizationHeader) {
+  const match = String(authorizationHeader || "").match(/^Bearer\s+(.+)$/i);
+  return Boolean(match && tokensMatch(expectedToken, match[1].trim()));
+}
+
+export function normalizeMessageLimit(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 10 * 1024 * 1024;
 }
 
 function clampTtl(ttl, defaultTtl, maxTtl) {

@@ -1,6 +1,3 @@
-// sidepanel/ui/chat-view.js - Chat transcript rendering: messages, message
-// editing, tool activity disclosures, reasoning disclosures, file artifacts.
-
 import { settings, chats, currentChatId, isAgentRunning, agentStopRequested } from "../state/store.js";
 import { saveChats } from "../state/persistence.js";
 import { escapeHtml, stripHtml, formatBytes, prettyPrint, approxTokens, formatTokens } from "../lib/format.js";
@@ -16,6 +13,7 @@ import { runAgentCycle, beginAgentRun, endAgentRun, recordAgentStopped } from ".
 import { updateUsageBar } from "./usage-bar.js";
 import { makeFallbackChatTitle } from "../features/chat-titles.js";
 import { renderHistoryList } from "./history-drawer.js";
+import { isActiveProviderReady, refreshProviderBadge } from "./model-picker.js";
 
 export async function setThinkingOpenDefault(keepThinkingOpen) {
   await persistSettings({
@@ -29,7 +27,6 @@ export async function setThinkingOpenDefault(keepThinkingOpen) {
 }
 
 
-// Render Chat history logs
 export function renderChatHistory() {
   const chatHistory = document.getElementById("chat-history");
   if (!chatHistory) return;
@@ -37,8 +34,8 @@ export function renderChatHistory() {
   chatHistory.innerHTML = `
     <div class="message system-msg">
       <div class="message-content">
-        <p><strong>ScrapeFlow is ready.</strong></p>
-        <p>Add your OpenRouter key in settings, then ask for scraper scripts, page inspection, or browser actions.</p>
+        <p><strong>Margin is ready.</strong></p>
+        <p>Connect OpenRouter or link a ChatGPT account, then ask for page inspection, browser actions, or scripts.</p>
         <p>Files appear as cards you can open and copy. Browser tool calls collapse into a single "Activity" trace — click to expand.</p>
       </div>
     </div>
@@ -82,9 +79,6 @@ export function appendMessageUI(role, content, attachments = [], shouldScroll = 
   const chatHistory = document.getElementById("chat-history");
   if (!chatHistory) return;
 
-  // Tool calls flow into a single collapsible "Activity" group so they don't
-  // dominate the conversation. Consecutive tool-status messages append into
-  // the existing group; any other message type breaks the run.
   if (role === "tool-status") {
     const group = ensureActivityGroup(chatHistory);
     const body = group.querySelector(".activity-group-body");
@@ -161,7 +155,6 @@ export function appendMessageUI(role, content, attachments = [], shouldScroll = 
     contentDiv.appendChild(attachmentContainer);
   }
   
-  // Text
   const textParagraph = document.createElement("div");
   textParagraph.className = "markdown message-text";
   textParagraph.innerHTML = formatMarkdown(content);
@@ -199,7 +192,7 @@ export function appendMessageUI(role, content, attachments = [], shouldScroll = 
 }
 
 function getMessageMetaLabel(role, messageIndex) {
-  const fallback = role === "user" ? "You" : "ScrapeFlow";
+  const fallback = role === "user" ? "You" : "Margin";
   const msg = getStoredMessage(messageIndex);
   if (!msg?.editedAt) return fallback;
   return `${fallback} - edited`;
@@ -289,7 +282,8 @@ async function commitMessageEdit(messageIndex, nextContent) {
     return;
   }
 
-  const activeChat = chats[currentChatId];
+  const runChatId = currentChatId;
+  const activeChat = chats[runChatId];
   const originalRole = msg.role;
   const changed = (msg.content || "") !== trimmed;
 
@@ -325,18 +319,21 @@ async function commitMessageEdit(messageIndex, nextContent) {
     showToast("Message edited");
     return;
   }
-  if (!settings.apiKey) {
-    showToast("Message edited. Add an API key to regenerate.");
+  if (settings.aiProvider === "openai") await refreshProviderBadge();
+  if (!isActiveProviderReady() || !settings.dataSharingConsent) {
+    showToast(settings.aiProvider === "openai"
+      ? "Message edited. Link OpenAI to regenerate."
+      : "Message edited. Add an OpenRouter key to regenerate.");
     return;
   }
 
   showToast("Message edited. Regenerating...");
-  beginAgentRun();
+  beginAgentRun(runChatId);
   try {
-    await runAgentCycle();
+    await runAgentCycle(runChatId);
   } finally {
     if (agentStopRequested) {
-      await recordAgentStopped();
+      await recordAgentStopped(runChatId);
     }
     endAgentRun();
   }
@@ -394,33 +391,33 @@ function renderFileArtifact(artifact) {
   const card = document.createElement("div");
   card.className = `file-artifact action-${actionClass}`;
   card.innerHTML = `
-    <button type="button" class="file-artifact-header" aria-expanded="false">
-      <span class="file-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-        </svg>
-      </span>
-      <span class="file-info">
-        <span class="file-name">${escapeHtml(file.path)}</span>
-        <span class="file-meta">
-          <span class="file-action-tag ${actionClass}">${escapeHtml(actionLabel)}</span>
-          <span class="file-meta-sep">·</span>
-          <span>${escapeHtml(file.language)}</span>
-          <span class="file-meta-sep">·</span>
-          <span>${lines} lines</span>
-          ${file.description ? `<span class="file-meta-sep">·</span><span class="file-desc">${escapeHtml(file.description)}</span>` : ""}
+    <div class="file-artifact-header">
+      <button type="button" class="file-artifact-toggle" aria-expanded="false">
+        <span class="file-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
         </span>
-      </span>
-      <span class="file-actions">
-        <button type="button" class="copy-file-btn">Copy</button>
+        <span class="file-info">
+          <span class="file-name">${escapeHtml(file.path)}</span>
+          <span class="file-meta">
+            <span class="file-action-tag ${actionClass}">${escapeHtml(actionLabel)}</span>
+            <span class="file-meta-sep">·</span>
+            <span>${escapeHtml(file.language)}</span>
+            <span class="file-meta-sep">·</span>
+            <span>${lines} lines</span>
+            ${file.description ? `<span class="file-meta-sep">·</span><span class="file-desc">${escapeHtml(file.description)}</span>` : ""}
+          </span>
+        </span>
         <span class="file-chevron" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="6 9 12 15 18 9"/>
           </svg>
         </span>
-      </span>
-    </button>
+      </button>
+      <button type="button" class="copy-file-btn">Copy</button>
+    </div>
     <div class="file-artifact-body hidden">
       <pre><code id="${codeId}" class="language-${escapeHtml(file.language)}">${escapeHtml(file.content)}</code></pre>
     </div>
@@ -432,16 +429,15 @@ function renderFileArtifact(artifact) {
 }
 
 function bindFileArtifact(card, file) {
-  const header = card.querySelector(".file-artifact-header");
+  const toggle = card.querySelector(".file-artifact-toggle");
   const body = card.querySelector(".file-artifact-body");
   const copyBtn = card.querySelector(".copy-file-btn");
 
-  if (header && body) {
-    header.addEventListener("click", (e) => {
-      if (e.target.closest(".copy-file-btn")) return;
+  if (toggle && body) {
+    toggle.addEventListener("click", () => {
       const expanded = body.classList.toggle("hidden") === false;
       card.classList.toggle("expanded", expanded);
-      header.setAttribute("aria-expanded", expanded ? "true" : "false");
+      toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
     });
   }
 
@@ -502,9 +498,6 @@ function updateActivityCount(group) {
 }
 
 function buildToolSummary(name, args, result, stage) {
-  // Concise one-liner shown in the collapsed tool row. Tries to surface the
-  // most relevant detail (path, URL, selector) so users get the gist without
-  // expanding.
   if (stage === "call" && (result === undefined || result === null || result === "")) {
     if (name === "click_element") return args?.selector ? `→ ${args.selector}` : "clicking…";
     if (name === "navigate") return args?.url ? `→ ${args.url}` : "navigating…";
