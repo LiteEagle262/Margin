@@ -1,14 +1,13 @@
-// sidepanel/features/chat-titles.js - Automatic and manual chat naming.
-
 import { settings, chats, currentChatId } from "../state/store.js";
 import { saveChats } from "../state/persistence.js";
 import { showToast } from "../lib/toast.js";
-import { fetchChatCompletion } from "../api/openrouter.js";
+import { fetchProviderChatCompletion, getProviderLabel } from "../api/provider.js";
 import { renderHistoryList } from "../ui/history-drawer.js";
 import { recordUsageForChat, updateUsageBar } from "../ui/usage-bar.js";
-import { refreshOpenRouterBalance } from "../ui/model-picker.js";
+import { refreshProviderBadge } from "../ui/model-picker.js";
 import { getDisplayAttachments } from "../ui/chat-view.js";
 import { buildProviderPreferences } from "../settings/sections/provider-routing.js";
+import { resolveReasoningEffortForActiveModel } from "../settings/sections/reasoning.js";
 import { switchView } from "../ui/navigation.js";
 
 export function makeFallbackChatTitle(input, fallback = "Attachment Chat") {
@@ -107,7 +106,8 @@ function buildChatTitleRequestBody(transcript, options = {}) {
   };
 
   if (options.disableReasoning) {
-    requestBody.reasoning = { effort: "none", exclude: true };
+    const effort = resolveReasoningEffortForActiveModel("none");
+    if (effort === "none") requestBody.reasoning = { effort, exclude: true };
   }
 
   if (options.includeProvider !== false) {
@@ -119,15 +119,22 @@ function buildChatTitleRequestBody(transcript, options = {}) {
 }
 
 async function fetchChatTitleCompletion(requestBody) {
-  return fetchChatCompletion(settings.apiKey, requestBody, { appTitle: "ScrapeFlow Chat Naming" });
+  return fetchProviderChatCompletion(settings.aiProvider, settings.apiKey, requestBody, { appTitle: "Margin Chat Naming" });
 }
 
 export async function generateChatTitle(chatId = currentChatId, { silent = false } = {}) {
   const chat = chats[chatId];
   if (!chat) return "";
-  if (!settings.apiKey) {
+  if (!settings.dataSharingConsent) {
     if (!silent) {
-      showToast("Add an OpenRouter API key to generate a chat name");
+      showToast("Accept the provider-processing disclosure before generating a chat name");
+      switchView("settings");
+    }
+    return "";
+  }
+  if (settings.aiProvider === "openrouter" && !settings.apiKey) {
+    if (!silent) {
+      showToast(`Add a ${getProviderLabel(settings.aiProvider)} key to generate a chat name`);
       switchView("settings");
     }
     return "";
@@ -143,6 +150,17 @@ export async function generateChatTitle(chatId = currentChatId, { silent = false
     return "";
   }
 
+  if (settings.aiProvider === "openai") {
+    const title = makeLocalChatTitle(transcript);
+    chat.title = title;
+    chat.titleMode = "auto";
+    chat.titleGeneratedAt = Date.now();
+    await saveChats();
+    renderHistoryList();
+    if (!silent) showToast("Chat name updated");
+    return title;
+  }
+
   try {
     const data = await fetchChatTitleCompletion(buildChatTitleRequestBody(transcript));
     if (data.usage) recordUsageForChat(data.usage, chatId);
@@ -151,7 +169,7 @@ export async function generateChatTitle(chatId = currentChatId, { silent = false
     let usedLocalFallback = false;
 
     if (!title) {
-      console.warn("OpenRouter returned an empty chat title. Retrying without provider routing.", {
+      console.warn("The AI provider returned an empty chat title. Retrying with minimal options.", {
         finish_reason: data.choices?.[0]?.finish_reason,
         native_finish_reason: data.choices?.[0]?.native_finish_reason,
         message: data.choices?.[0]?.message
@@ -177,7 +195,7 @@ export async function generateChatTitle(chatId = currentChatId, { silent = false
     await saveChats();
     renderHistoryList();
     updateUsageBar();
-    refreshOpenRouterBalance();
+    refreshProviderBadge();
     if (!silent) showToast(usedLocalFallback ? "Model returned empty name; used local title" : "Chat name generated");
     return title;
   } catch (error) {
@@ -189,7 +207,8 @@ export async function generateChatTitle(chatId = currentChatId, { silent = false
 
 export async function maybeAutoGenerateChatTitle(chatId = currentChatId) {
   const chat = chats[chatId];
-  if (!chat || chat.titleMode === "manual" || chat.titleMode === "legacy" || chat.titleGeneratedAt || !settings.apiKey) return;
+  const providerReady = settings.aiProvider === "openai" || Boolean(settings.apiKey);
+  if (!chat || chat.titleMode === "manual" || chat.titleMode === "legacy" || chat.titleGeneratedAt || !settings.dataSharingConsent || !providerReady) return;
   const transcript = buildTitleTranscript(chat);
   if (transcript.length < 20) return;
   await generateChatTitle(chatId, { silent: true });

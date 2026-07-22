@@ -1,12 +1,8 @@
-// sidepanel/tools/execute.js - Tool dispatch: assembles the declared tool
-// list, routes calls to workspace/web-search/page/MCP executors, and guards
-// against tool loops.
-
 import { settings, mcpToolRegistry, mcpConnections, activeToolRunStats } from "../state/store.js";
 import { mcpToolName, parseMcpToolName, connectMcpServer, callMcpTool } from "../api/mcp-client.js";
 import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool } from "../api/tavily.js";
 import { BROWSER_TOOLS, WORKSPACE_TOOLS, WORKSPACE_TOOL_NAMES, WEB_SEARCH_TOOLS, RECON_TOOLS } from "./schemas.js";
-import { DEFAULT_ENABLED_TOOLS, isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
+import { BUILT_IN_TOOL_NAMES, isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
 import { getMaxToolCalls } from "../settings/sections/agent-limits.js";
 import { executeWorkspaceTool } from "../features/workspace.js";
 
@@ -14,19 +10,52 @@ const TOOL_LOOP_LIMITS = {
   sameFailure: 2,
   repeatedReadOnly: 3
 };
+let mcpRefreshGeneration = 0;
+
+const CONFIRM_EACH_USE_TOOLS = new Set([
+  "clear_network_logs",
+  "delete_file",
+  "evaluate_script",
+  "get_authenticator_code",
+  "get_cookies",
+  "get_network_log_detail",
+  "get_network_logs",
+  "get_storage",
+  "http_request",
+  "list_authenticator_domains",
+  "list_scripts",
+  "rename_file",
+  "run_js",
+  "search_scripts",
+  "start_network_capture",
+  "stop_network_capture",
+  "take_screenshot",
+]);
+
+function confirmSensitiveToolUse(name) {
+  if (!CONFIRM_EACH_USE_TOOLS.has(name)) return true;
+  return confirm(`Margin wants to run the sensitive tool “${name}”. Allow this one use?`);
+}
 
 
 
 export async function refreshMcpTools() {
+  const generation = ++mcpRefreshGeneration;
   mcpToolRegistry.clear();
   mcpConnections.clear();
 
   const enabledServers = settings.mcpServers.filter(s => s.enabled !== false && s.url);
-  for (const server of enabledServers) {
-    try {
+  const settled = await Promise.allSettled(enabledServers.map(async (server) => {
       const connection = await connectMcpServer(server);
+      return { server, connection };
+  }));
+  if (generation !== mcpRefreshGeneration) return;
+
+  settled.forEach((outcome, index) => {
+    if (outcome.status === "fulfilled") {
+      const { server, connection } = outcome.value;
       mcpConnections.set(server.id, { ...connection, server });
-      connection.tools.forEach(tool => {
+      connection.tools.forEach((tool) => {
         const fullName = mcpToolName(server.id, tool.name);
         mcpToolRegistry.set(fullName, {
           serverId: server.id,
@@ -35,10 +64,10 @@ export async function refreshMcpTools() {
           schema: tool
         });
       });
-    } catch (err) {
-      console.warn(`MCP server "${server.name}" failed:`, err);
+    } else {
+      console.warn(`MCP server "${enabledServers[index].name}" failed:`, outcome.reason);
     }
-  }
+  });
 }
 
 export function getMcpToolSchemas() {
@@ -111,16 +140,41 @@ async function executeMcpTool(fullName, args) {
     );
 
     if (result?.content) {
-      return result.content.map(item => {
+      const text = result.content.map(item => {
         if (item.type === "text") return item.text;
         if (item.type === "image") return `[image: ${item.mimeType || "image"}]`;
         return JSON.stringify(item);
       }).join("\n");
+      if (result.isError === true) {
+        return {
+          ok: false,
+          tool: fullName,
+          error_code: "mcp_tool_error",
+          recoverable: true,
+          message: text || `MCP tool "${entry.originalName}" failed.`,
+        };
+      }
+      return text;
     }
 
+    if (result?.isError === true) {
+      return {
+        ok: false,
+        tool: fullName,
+        error_code: "mcp_tool_error",
+        recoverable: true,
+        message: `MCP tool "${entry.originalName}" failed.`,
+      };
+    }
     return typeof result === "string" ? result : JSON.stringify(result, null, 2);
   } catch (err) {
-    return `Error executing MCP tool "${entry.originalName}": ${err.message}`;
+    return {
+      ok: false,
+      tool: fullName,
+      error_code: "mcp_request_failed",
+      recoverable: true,
+      message: `MCP tool "${entry.originalName}" failed: ${err.message}`,
+    };
   }
 }
 
@@ -128,13 +182,22 @@ export async function executeTool(name, args = {}) {
   if (parseMcpToolName(name)) {
     return executeMcpTool(name, args);
   }
-  if (DEFAULT_ENABLED_TOOLS.has(name) && !isBuiltInToolEnabled(name)) {
+  if (BUILT_IN_TOOL_NAMES.has(name) && !isBuiltInToolEnabled(name)) {
     return JSON.stringify({
       ok: false,
       tool: name,
       error_code: "tool_disabled",
       recoverable: false,
-      message: `Tool "${name}" is disabled in ScrapeFlow Tool Access settings.`
+      message: `Tool "${name}" is disabled in Margin Tool Access settings.`
+    }, null, 2);
+  }
+  if (!confirmSensitiveToolUse(name)) {
+    return JSON.stringify({
+      ok: false,
+      tool: name,
+      error_code: "user_denied",
+      recoverable: false,
+      message: `The user declined the sensitive tool "${name}".`,
     }, null, 2);
   }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
@@ -157,6 +220,22 @@ export function parseToolResultObject(result) {
   }
 }
 
+export function guardToolCallBeforeExecution(toolName) {
+  if (!activeToolRunStats) return null;
+  activeToolRunStats.toolCallCount += 1;
+  const maxToolCalls = getMaxToolCalls();
+  if (maxToolCalls > 0 && activeToolRunStats.toolCallCount > maxToolCalls) {
+    return {
+      ok: false,
+      tool: toolName,
+      error_code: "tool_loop_limit",
+      recoverable: false,
+      message: `Stopped after ${maxToolCalls} tool calls. Summarize progress or ask the user before continuing.`
+    };
+  }
+  return null;
+}
+
 function stableToolArgsKey(args = {}) {
   try {
     return JSON.stringify(args, Object.keys(args || {}).sort());
@@ -166,24 +245,9 @@ function stableToolArgsKey(args = {}) {
 }
 
 export function evaluateToolLoopGuard(toolName, toolArgs, result) {
-  if (!activeToolRunStats || !DEFAULT_ENABLED_TOOLS.has(toolName)) return null;
+  if (!activeToolRunStats || !BUILT_IN_TOOL_NAMES.has(toolName)) return null;
   const parsed = parseToolResultObject(result);
   const failed = parsed?.ok === false || (typeof result === "string" && result.startsWith("Error:"));
-
-  const maxToolCalls = getMaxToolCalls(); // 0 means unlimited
-  const browserToolNames = new Set(BROWSER_TOOLS.map((tool) => tool.function.name));
-  if (browserToolNames.has(toolName)) {
-    activeToolRunStats.browserToolCount += 1;
-    if (maxToolCalls > 0 && activeToolRunStats.browserToolCount > maxToolCalls) {
-      return {
-        ok: false,
-        tool: toolName,
-        error_code: "tool_loop_limit",
-        recoverable: false,
-        message: `Stopped tool loop after ${activeToolRunStats.browserToolCount} browser tool calls without an assistant response (limit: ${maxToolCalls}). Summarize progress or ask the user before continuing.`
-      };
-    }
-  }
 
   const readOnly = new Set(["get_dom", "take_snapshot"]);
   if (!readOnly.has(toolName) && !failed) {
@@ -220,3 +284,42 @@ export function evaluateToolLoopGuard(toolName, toolArgs, result) {
 
   return null;
 }
+
+globalThis.chrome?.runtime?.onMessage?.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "mcp/tool-call") return false;
+  executeTool(String(message.name || ""), message.arguments || {})
+    .then((result) => {
+      if (result && typeof result === "object" && result.screenshot) {
+        const data = String(result.screenshot).replace(/^data:image\/[^;]+;base64,/, "");
+        sendResponse({
+          ok: true,
+          result: {
+            content: [
+              { type: "text", text: result.message || "Screenshot captured." },
+              { type: "image", data, mimeType: "image/png" },
+            ],
+            isError: false,
+          },
+        });
+        return;
+      }
+      const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+      sendResponse({
+        ok: true,
+        result: {
+          content: [{ type: "text", text }],
+          isError: result?.ok === false || text.startsWith("Error:"),
+        },
+      });
+    })
+    .catch((error) => {
+      sendResponse({
+        ok: false,
+        result: {
+          content: [{ type: "text", text: error.message || String(error) }],
+          isError: true,
+        },
+      });
+    });
+  return true;
+});

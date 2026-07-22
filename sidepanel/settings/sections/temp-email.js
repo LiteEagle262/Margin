@@ -1,5 +1,3 @@
-// Settings section: temp-email feature flag forwarded to the MCP bridge.
-
 import { settings } from "../../state/store.js";
 import { normalizeTempEmailSettings } from "../../../shared/settings-schema.js";
 

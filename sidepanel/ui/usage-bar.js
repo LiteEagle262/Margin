@@ -1,19 +1,9 @@
-// sidepanel/ui/usage-bar.js - Context-usage ring and accumulated cost meter.
-// Estimates next-turn context by category; cost comes from real API usage.
-
-import { chats, currentChatId } from "../state/store.js";
+import { chats, currentChatId, settings } from "../state/store.js";
 import { approxTokens, formatTokens, formatCost } from "../lib/format.js";
 import { getEffectiveSystemPrompt, getActiveModelInfo, buildApiMessagesForChat, countApiMessageTokens } from "../agent/context.js";
 import { getMcpToolSchemas, filterEnabledToolSchemas } from "../tools/execute.js";
 import { BROWSER_TOOLS, WORKSPACE_TOOLS, WEB_SEARCH_TOOLS } from "../tools/schemas.js";
 
-// ----------------------------------------------------
-// USAGE BAR: CONTEXT RING + COST METER
-// ----------------------------------------------------
-// Estimates next-turn context usage by category and tracks accumulated cost
-// across the chat using OpenRouter's reported usage. Token counts use the
-// chars/4 heuristic — accurate enough for a UX gauge, and we surface model-
-// reported actuals via the cost path for the spend number.
 const USAGE_CATEGORIES = [
   { key: "system",       label: "System prompt", color: "#5e9cff" },
   { key: "browserTools", label: "Browser tools", color: "#7dd3a7" },
@@ -78,9 +68,6 @@ export function updateUsageBar() {
   const window = model.contextWindow;
   const pct = known && window > 0 ? Math.min(100, (total / window) * 100) : 0;
 
-  // Ring: stroke-dasharray uses pathLength="100" so the arc maps to percent.
-  // When the real window is unknown we leave the ring neutral rather than imply
-  // a false percentage against the fallback budget.
   const ringProgress = ringBtn.querySelector(".ring-progress");
   if (ringProgress) {
     ringProgress.style.strokeDasharray = known ? `${pct} 100` : "0 100";
@@ -93,7 +80,6 @@ export function updateUsageBar() {
     ? `${formatTokens(total)} of ${formatTokens(window)} ctx`
     : `${formatTokens(total)} used · max unknown`;
 
-  // Tooltip header + breakdown rows
   tooltip.querySelector(".tooltip-total").textContent = `${formatTokens(total)} tokens`;
   tooltip.querySelector(".tooltip-model").textContent = model.name;
   tooltip.querySelector(".tooltip-window").textContent = known
@@ -131,14 +117,24 @@ export function updateUsageBar() {
     list.innerHTML = `<li class="tooltip-empty">No context yet — send a message to populate.</li>`;
   }
 
-  // Cost meter — sourced from accumulated actuals reported by OpenRouter.
   const activeChat = chats[currentChatId];
   const cost = activeChat?.cost?.totalUsd || 0;
-  costEl.querySelector(".cost-amount").textContent = formatCost(cost);
-  costEl.classList.toggle("has-spend", cost > 0);
-  costEl.title = activeChat?.cost
-    ? `Prompt: ${formatTokens(activeChat.cost.promptTokens || 0)} tok · Completion: ${formatTokens(activeChat.cost.completionTokens || 0)} tok\nThis chat: $${formatCost(cost)}`
-    : "No spend recorded yet for this chat.";
+  const promptTokens = activeChat?.cost?.promptTokens || 0;
+  const completionTokens = activeChat?.cost?.completionTokens || 0;
+  const costIcon = costEl.querySelector(".cost-icon");
+  if (settings.aiProvider === "openai") {
+    if (costIcon) costIcon.textContent = "T";
+    costEl.querySelector(".cost-amount").textContent = formatTokens(promptTokens + completionTokens);
+    costEl.classList.toggle("has-spend", promptTokens + completionTokens > 0);
+    costEl.title = `Prompt: ${formatTokens(promptTokens)} tok · Completion: ${formatTokens(completionTokens)} tok\nCheck OpenAI billing for cost.`;
+  } else {
+    if (costIcon) costIcon.textContent = "$";
+    costEl.querySelector(".cost-amount").textContent = formatCost(cost);
+    costEl.classList.toggle("has-spend", cost > 0);
+    costEl.title = activeChat?.cost
+      ? `Prompt: ${formatTokens(promptTokens)} tok · Completion: ${formatTokens(completionTokens)} tok\nThis chat: $${formatCost(cost)}`
+      : "No spend recorded yet for this chat.";
+  }
 }
 
 export function recordUsage(usage) {
@@ -146,8 +142,6 @@ export function recordUsage(usage) {
 }
 
 export function recordUsageForChat(usage, chatId) {
-  // Called after each OpenRouter response. `usage` shape:
-  // { prompt_tokens, completion_tokens, total_tokens, cost? }
   if (!usage || !chatId) return;
   const chat = chats[chatId];
   if (!chat) return;
@@ -158,8 +152,6 @@ export function recordUsageForChat(usage, chatId) {
   chat.cost.promptTokens += prompt;
   chat.cost.completionTokens += completion;
 
-  // OpenRouter sometimes returns a top-level `cost` (in USD). When absent,
-  // derive it from model pricing rates.
   if (typeof usage.cost === "number" && Number.isFinite(usage.cost)) {
     chat.cost.totalUsd += usage.cost;
   } else {

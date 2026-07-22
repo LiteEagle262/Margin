@@ -1,5 +1,3 @@
-// sidepanel/lib/toast.js - Transient notification banner.
-
 export function showToast(message) {
   const toast = document.getElementById("toast");
   if (!toast) return;

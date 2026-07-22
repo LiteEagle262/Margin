@@ -1,10 +1,13 @@
-// sidepanel/features/workspace.js - Persistent file workspace shared across
-// chats: record helpers and the workspace file tools the agent calls.
-
 import { chats, currentChatId, globalWorkspace } from "../state/store.js";
 import { saveChats, persistGlobalWorkspace } from "../state/persistence.js";
 import { renderWorkspaceStrip } from "../ui/workspace-strip.js";
 import { getContextItem } from "../agent/context.js";
+import { isSafeVirtualPath, safeRecord } from "../lib/safe-record.js";
+
+function workspacePath(value) {
+  const path = String(value || "").trim().replaceAll("\\", "/");
+  return isSafeVirtualPath(path) ? path : "";
+}
 
 export async function saveGlobalWorkspace() {
   await persistGlobalWorkspace();
@@ -13,20 +16,23 @@ export async function saveGlobalWorkspace() {
 
 
 export function syncChatFileToGlobal(path, fileRecord) {
+  if (!isSafeVirtualPath(path)) return;
   globalWorkspace[path] = { ...fileRecord };
 }
 
 export function removeGlobalFile(path) {
+  if (!isSafeVirtualPath(path)) return;
   delete globalWorkspace[path];
 }
 
 export function getWorkspaceFile(path) {
+  if (!isSafeVirtualPath(path)) return null;
   const chatFiles = getActiveChatFiles();
   return chatFiles[path] || globalWorkspace[path] || null;
 }
 
 export function getAllWorkspaceFiles() {
-  const merged = { ...globalWorkspace };
+  const merged = safeRecord(globalWorkspace, isSafeVirtualPath);
   const chatFiles = getActiveChatFiles();
   Object.assign(merged, chatFiles);
   return merged;
@@ -56,8 +62,8 @@ export function inferLanguageFromPath(path, fallback = "text") {
 
 export function getActiveChatFiles() {
   const chat = chats[currentChatId];
-  if (!chat) return {};
-  if (!chat.files) chat.files = {};
+  if (!chat) return Object.create(null);
+  chat.files = safeRecord(chat.files, isSafeVirtualPath);
   return chat.files;
 }
 
@@ -66,10 +72,11 @@ export async function executeWorkspaceTool(name, args = {}) {
 
   switch (name) {
     case "write_file": {
-      if (!args.path || !args.content) {
+      if (!args.path || args.content === undefined || args.content === null) {
         return "Error: write_file requires path and content.";
       }
-      const path = String(args.path).trim();
+      const path = workspacePath(args.path);
+      if (!path) return "Error: write_file requires a safe relative path.";
       const existing = getWorkspaceFile(path);
       const language = args.language || inferLanguageFromPath(path);
       const tags = Array.isArray(args.tags)
@@ -101,7 +108,8 @@ export async function executeWorkspaceTool(name, args = {}) {
     }
 
     case "read_file": {
-      const path = String(args.path || "").trim();
+      const path = workspacePath(args.path);
+      if (!path) return "Error: read_file requires a safe relative path.";
       const file = getWorkspaceFile(path);
       if (!file) {
         return `Error: File "${path}" not found in workspace. Use list_files or search_files to find available files.`;
@@ -162,7 +170,8 @@ export async function executeWorkspaceTool(name, args = {}) {
     }
 
     case "get_file_info": {
-      const path = String(args.path || "").trim();
+      const path = workspacePath(args.path);
+      if (!path) return "Error: get_file_info requires a safe relative path.";
       const file = getWorkspaceFile(path);
       if (!file) return `Error: File "${path}" not found in workspace.`;
       return JSON.stringify({
@@ -177,8 +186,8 @@ export async function executeWorkspaceTool(name, args = {}) {
     }
 
     case "rename_file": {
-      const oldPath = String(args.old_path || "").trim();
-      const newPath = String(args.new_path || "").trim();
+      const oldPath = workspacePath(args.old_path);
+      const newPath = workspacePath(args.new_path);
       if (!oldPath || !newPath) return "Error: rename_file requires old_path and new_path.";
       const file = getWorkspaceFile(oldPath);
       if (!file) return `Error: File "${oldPath}" not found in workspace.`;
@@ -196,7 +205,8 @@ export async function executeWorkspaceTool(name, args = {}) {
     }
 
     case "delete_file": {
-      const path = String(args.path || "").trim();
+      const path = workspacePath(args.path);
+      if (!path) return "Error: delete_file requires a safe relative path.";
       const file = getWorkspaceFile(path);
       if (!file) return `Error: File "${path}" not found in workspace.`;
       delete files[path];

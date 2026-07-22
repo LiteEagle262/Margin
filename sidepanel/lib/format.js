@@ -1,6 +1,3 @@
-// sidepanel/lib/format.js - Pure formatting and escaping helpers.
-// No DOM access, no app state.
-
 export function approxTokens(text) {
   if (text === undefined || text === null) return 0;
   const s = typeof text === "string" ? text : JSON.stringify(text);

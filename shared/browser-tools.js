@@ -1,10 +1,5 @@
-// shared/browser-tools.js - Browser automation tools for ScrapeFlow
-// Used by background.js (MCP bridge).
-
 import { isNetworkCaptureActive, executeNetworkTool } from "./network-logs.js";
 
-// Returns the latched tab record from session storage if any, else null.
-// Auto-clears the entry if the tab no longer exists.
 async function getLatchedTabRecord() {
   try {
     const stored = await chrome.storage.session.get(["latchedTab"]);
@@ -22,9 +17,7 @@ async function getLatchedTabRecord() {
   }
 }
 
-// All browser tools route through this. When a tab is latched, every tool
-// targets that tab — even when the user has navigated to a different tab in
-// the foreground. When no latch is set, falls back to the active tab.
+// A latch takes precedence over the foreground tab for every browser tool.
 export async function getActiveTabId() {
   const latched = await getLatchedTabRecord();
   if (latched) return latched.tabId;
@@ -65,10 +58,19 @@ async function listOpenTabs() {
 }
 
 async function navigateActiveTab(url) {
+  let destination;
+  try {
+    destination = new URL(url);
+  } catch {
+    throw new Error("Navigation requires a valid http:// or https:// URL.");
+  }
+  if (destination.protocol !== "http:" && destination.protocol !== "https:") {
+    throw new Error("Margin navigation is limited to http:// and https:// URLs.");
+  }
   const tabId = await getActiveTabId();
   if (!tabId) throw new Error("No active tab in current window.");
-  await chrome.tabs.update(tabId, { url });
-  return `Navigated active tab to ${url}`;
+  await chrome.tabs.update(tabId, { url: destination.href });
+  return `Navigated active tab to ${destination.href}`;
 }
 
 async function runScriptInActiveTab(func, args = []) {
@@ -238,8 +240,7 @@ async function getCurrentAuthenticatorDomain(args = {}) {
   return normalizeAuthenticatorDomain(tab?.url || "");
 }
 
-// Capture a screenshot of an arbitrary tab (even when not the foreground tab)
-// via the debugger. captureVisibleTab cannot reach background tabs.
+// The debugger can capture a latched background tab; captureVisibleTab cannot.
 async function captureTabViaDebugger(tabId) {
   const keepAttached = isNetworkCaptureActive(tabId);
   return new Promise((resolve, reject) => {
@@ -634,9 +635,7 @@ async function evaluateScriptFunction(args = {}) {
   return toolOk("evaluate_script", "Script evaluated.", { result: raw });
 }
 
-// Replay/craft an HTTP request from the page's own context so its cookies and
-// origin apply. Returns structured status/headers/body instead of making the
-// model hand-write fetch code via run_js.
+// Run requests in-page so the selected tab's origin and cookies apply.
 async function httpRequestViaPage(args = {}) {
   const url = String(args.url || "").trim();
   if (!url) return toolError("http_request", "missing_url", "http_request requires url.", { recoverable: false });
@@ -682,8 +681,7 @@ async function httpRequestViaPage(args = {}) {
   return toolOk("http_request", `HTTP ${result.status} ${result.statusText} in ${result.timing_ms}ms`, result);
 }
 
-// Read cookies (including httpOnly) via chrome.cookies — only reachable from the
-// background worker, which is where this runs. Page scripts cannot see httpOnly.
+// chrome.cookies is required for httpOnly cookies that page scripts cannot access.
 async function getCookiesForTool(args = {}) {
   let targetUrl = "";
   if (args.domain) {
@@ -767,17 +765,14 @@ async function listScriptsInPage() {
           seen.add(e.name);
           scripts.push({ type: "resource", url: e.name, transferSize: e.transferSize || 0 });
         });
-    } catch {
-      // resource timing may be unavailable
-    }
+    } catch {}
     return { url: location.href, count: scripts.length, scripts };
   });
   if (!result) return "Error: Failed to list page scripts.";
   return JSON.stringify(result, null, 2);
 }
 
-// Fetch and grep the page's loaded bundles inside the page so only matching
-// snippets travel back — never whole minified files.
+// Return matching bundle snippets rather than entire minified files.
 async function searchScriptsInPage(args = {}) {
   const query = String(args.query || "");
   if (!query.trim()) return toolError("search_scripts", "missing_query", "search_scripts requires query.", { recoverable: false });
@@ -791,9 +786,7 @@ async function searchScriptsInPage(args = {}) {
       performance.getEntriesByType("resource")
         .filter((e) => e.initiatorType === "script" || /\.m?js(\?|$)/i.test(e.name))
         .forEach((e) => urls.add(e.name));
-    } catch {
-      // ignore
-    }
+    } catch {}
 
     let matcher = null;
     if (input.useRegex) {
@@ -825,7 +818,7 @@ async function searchScriptsInPage(args = {}) {
         const line = lines[i];
         const idx = matcher ? line.search(matcher) : line.toLowerCase().indexOf(needle);
         if (idx < 0) continue;
-        // Minified bundles have enormous single lines — return a window only.
+        // Cap windows around matches because minified bundles may be one line.
         let snippet = line;
         if (snippet.length > 400) {
           snippet = (idx > 200 ? "…" : "") + line.slice(Math.max(0, idx - 200), idx + 200) + (line.length > idx + 200 ? "…" : "");
@@ -896,7 +889,7 @@ ${domResult.outerHtml}`;
         if (tab.active) {
           screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
         } else {
-          // Latched tab isn't currently visible — use the debugger to capture it.
+          // A latched background tab requires debugger capture.
           screenshotDataUrl = await captureTabViaDebugger(tabId);
           note = "Screenshot captured from latched (background) tab.";
         }
@@ -1041,7 +1034,7 @@ ${domResult.outerHtml}`;
         const keys = await getAuthenticatorKeyMap();
         const match = findAuthenticatorKeyForDomain(keys, domain);
         if (!match) {
-          return `Error: No authenticator manual key saved for "${domain}". Add it in ScrapeFlow settings first.`;
+          return `Error: No authenticator manual key saved for "${domain}". Add it in Margin settings first.`;
         }
         const token = await generateTotp(match.manualKey);
         return JSON.stringify({

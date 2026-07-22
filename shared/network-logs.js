@@ -1,8 +1,6 @@
-// shared/network-logs.js - CDP Network domain capture for request debugging
-
 import { normalizeNetworkCaptureSettings } from "./settings-schema.js";
 
-const NETWORK_STORAGE_KEY = "scrapeflowNetworkLogs";
+const NETWORK_STORAGE_KEY = "marginNetworkLogs";
 const NETWORK_SETTINGS_KEY = "networkCapture";
 const MAX_LOG_ENTRIES = 1500;
 const MAX_RETURNED_ENTRIES = 150;
@@ -14,6 +12,7 @@ const MAX_FRAME_LENGTH = 2000;
 
 const SENSITIVE_HEADER_RE = /^(authorization|cookie|set-cookie|proxy-authorization|x-api-key|x-auth-token|x-csrf-token|x-xsrf-token)$/i;
 const SENSITIVE_FIELD_RE = /(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth|credential|session|csrf|xsrf)/i;
+const SENSITIVE_URL_PARAM_RE = /^(?:authorization|auth|bearer|code|credential|client[_-]?secret|id[_-]?token|jwt|key|password|passwd|pwd|secret|session(?:id)?|sig|signature|token|x-amz-credential|x-amz-security-token|x-amz-signature|x-goog-credential|x-goog-signature)$/i;
 const BODY_TEXT_MIME_RE = /^(application\/json|application\/.*\+json|text\/|application\/x-www-form-urlencoded|application\/xml|application\/graphql|application\/javascript)/i;
 
 const DEFAULT_NETWORK_SETTINGS = {
@@ -31,6 +30,10 @@ const networkState = {
   hydratePromise: null,
   settings: { ...DEFAULT_NETWORK_SETTINGS }
 };
+
+function isSensitiveUrlParam(name) {
+  return SENSITIVE_URL_PARAM_RE.test(name) || SENSITIVE_FIELD_RE.test(name);
+}
 
 function getTabNetworkState(tabId) {
   if (!networkState.tabs.has(tabId)) {
@@ -80,6 +83,44 @@ function redactHeaders(headers = {}) {
   }, {});
 }
 
+function redactUrlFragment(fragment) {
+  return String(fragment || "").replace(
+    /([#&?])([^#&?=]+)=([^&#]*)/g,
+    (match, separator, rawKey) => {
+      let key = rawKey;
+      try {
+        key = decodeURIComponent(rawKey.replace(/\+/g, " "));
+      } catch {
+        // Use the raw key when percent-decoding fails.
+      }
+      return isSensitiveUrlParam(key)
+        ? `${separator}${rawKey}=${encodeURIComponent("[redacted]")}`
+        : match;
+    },
+  );
+}
+
+export function redactNetworkUrl(rawUrl) {
+  const value = String(rawUrl || "");
+  if (!shouldRedact() || !value) return value;
+
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    const keys = [...new Set(url.searchParams.keys())];
+    for (const key of keys) {
+      if (isSensitiveUrlParam(key)) {
+        url.searchParams.set(key, "[redacted]");
+      }
+    }
+    url.hash = redactUrlFragment(url.hash);
+    return url.toString();
+  } catch {
+    return redactUrlFragment(value);
+  }
+}
+
 function redactJsonValue(value, key = "") {
   if (!shouldRedact()) return value;
   if (SENSITIVE_FIELD_RE.test(key)) return "[redacted]";
@@ -121,6 +162,9 @@ function isProbablyTextBody(mimeType = "") {
 }
 
 function attachDebuggerToTab(tabId) {
+  if (!chrome.debugger?.attach) {
+    return Promise.reject(new Error("Chrome debugger access is unavailable. Reload Margin after granting its required permissions."));
+  }
   return new Promise((resolve, reject) => {
     chrome.debugger.attach({ tabId }, "1.3", () => {
       const err = chrome.runtime.lastError;
@@ -222,6 +266,8 @@ function addEntry(tabId, entry) {
 function serializeEntry(entry, includeBodies = true) {
   const copy = { ...entry };
   delete copy._responseBodyFetched;
+  copy.url = redactNetworkUrl(copy.url);
+  copy.redirectedTo = redactNetworkUrl(copy.redirectedTo);
   copy.requestHeaders = redactHeaders(copy.requestHeaders || {});
   copy.responseHeaders = redactHeaders(copy.responseHeaders || {});
   copy.postData = copy.postData ? redactTextBody(copy.postData, copy.requestHeaders?.["content-type"] || "") : copy.postData;
@@ -330,9 +376,7 @@ async function clearPersistedNetworkState(tabId = null) {
     if (!snapshot?.tabs) return;
     delete snapshot.tabs[String(tabId)];
     await chrome.storage.session.set({ [NETWORK_STORAGE_KEY]: snapshot });
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 function fetchResponseBody(tabId, requestId, entry) {
@@ -361,7 +405,7 @@ function fetchResponseBody(tabId, requestId, entry) {
   );
 }
 
-chrome.debugger.onEvent.addListener((source, method, params) => {
+chrome.debugger?.onEvent?.addListener((source, method, params) => {
   if (!source.tabId) return;
   const state = getTabNetworkState(source.tabId);
   if (!state.capturing) return;
@@ -373,13 +417,13 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       previousEntry.statusText = params.redirectResponse.statusText;
       previousEntry.responseHeaders = redactHeaders(params.redirectResponse.headers || {});
       previousEntry.mimeType = params.redirectResponse.mimeType || previousEntry.mimeType;
-      previousEntry.redirectedTo = params.request.url;
+      previousEntry.redirectedTo = redactNetworkUrl(params.request.url);
     }
 
     const entry = {
       id: createPublicRequestId(source.tabId, params.requestId),
       cdpRequestId: params.requestId,
-      url: params.request.url,
+      url: redactNetworkUrl(params.request.url),
       method: params.request.method,
       type: params.type || params.initiator?.type || "other",
       timestamp: params.timestamp,
@@ -458,7 +502,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     const entry = {
       id: createPublicRequestId(source.tabId, params.requestId),
       cdpRequestId: params.requestId,
-      url: params.url,
+      url: redactNetworkUrl(params.url),
       method: "WS",
       type: "WebSocket",
       timestamp: null,
@@ -558,7 +602,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   clearPersistedNetworkState(tabId);
 });
 
-chrome.debugger.onDetach.addListener((source, reason) => {
+chrome.debugger?.onDetach?.addListener((source, reason) => {
   if (!source.tabId) return;
   const state = networkState.tabs.get(source.tabId);
   if (!state) return;
@@ -574,16 +618,27 @@ async function enableNetworkCapture(tabId, mode = "manual") {
   await hydrateNetworkState();
   const state = getTabNetworkState(tabId);
 
-  if (mode === "auto") state.autoCapture = true;
-  else state.manualCapture = true;
-
   if (!state.capturing) {
     await attachDebuggerToTab(tabId);
-    await sendDebuggerCommand(tabId, "Network.enable", {
-      maxPostDataSize: MAX_BODY_LENGTH
-    });
+    try {
+      await sendDebuggerCommand(tabId, "Network.enable", {
+        maxPostDataSize: MAX_BODY_LENGTH
+      });
+    } catch (error) {
+      state.attached = false;
+      await new Promise((resolve) => {
+        chrome.debugger.detach({ tabId }, () => {
+          void chrome.runtime.lastError;
+          resolve();
+        });
+      });
+      state.lastError = error.message;
+      throw error;
+    }
   }
 
+  if (mode === "auto") state.autoCapture = true;
+  else state.manualCapture = true;
   state.capturing = true;
   state.lastError = "";
   return state;
@@ -653,7 +708,15 @@ export async function syncNetworkAutoCapture(latchedTab = null) {
     return "Network auto-capture is off.";
   }
 
-  await startNetworkCapture(latchedTab.tabId, { mode: "auto" });
+  try {
+    await startNetworkCapture(latchedTab.tabId, { mode: "auto" });
+  } catch (error) {
+    const state = getTabNetworkState(latchedTab.tabId);
+    state.autoCapture = false;
+    state.capturing = state.manualCapture === true;
+    state.lastError = error.message;
+    return `Network auto-capture could not start: ${error.message}`;
+  }
 
   for (const [tabId, state] of networkState.tabs.entries()) {
     if (tabId === latchedTab.tabId || !state.autoCapture) continue;
@@ -668,7 +731,7 @@ function formatLogEntry(entry, includeBody = false) {
   const base = {
     id: entry.id,
     method: entry.method,
-    url: entry.url,
+    url: redactNetworkUrl(entry.url),
     type: entry.type,
     status: entry.status,
     statusText: entry.statusText,
@@ -679,6 +742,8 @@ function formatLogEntry(entry, includeBody = false) {
     fromServiceWorker: entry.fromServiceWorker === true,
     encodedDataLength: entry.encodedDataLength
   };
+
+  if (entry.redirectedTo) base.redirectedTo = redactNetworkUrl(entry.redirectedTo);
 
   if (Array.isArray(entry.frames)) {
     base.frameCount = entry.frameCount || entry.frames.length;
@@ -747,7 +812,7 @@ async function getNetworkLogs(tabId, args = {}) {
     capturing: state.capturing,
     autoCapture: state.autoCapture,
     persistedSessionBuffer: networkState.settings.persistSessionLogs,
-    redaction: networkState.settings.redactSensitiveData ? "sensitive headers and common secret fields redacted" : "off",
+    redaction: networkState.settings.redactSensitiveData ? "sensitive URL parameters, headers, and common secret fields redacted" : "off",
     count: entries.length,
     totalBufferedForTab: state.entries.length,
     entries: entries.map((entry) => formatLogEntry(entry, includeBody))
@@ -764,7 +829,7 @@ export async function getNetworkLogSnapshot(tabId, args = {}) {
     capturing: state.capturing,
     autoCapture: state.autoCapture,
     persistedSessionBuffer: networkState.settings.persistSessionLogs,
-    redaction: networkState.settings.redactSensitiveData ? "sensitive headers and common secret fields redacted" : "off",
+    redaction: networkState.settings.redactSensitiveData ? "sensitive URL parameters, headers, and common secret fields redacted" : "off",
     totalBufferedForTab: state.entries.length,
     maxBufferedForTab: MAX_LOG_ENTRIES,
     maxReturnedForTool: MAX_RETURNED_ENTRIES,
