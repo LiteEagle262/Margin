@@ -1,7 +1,7 @@
 // Settings section: Tavily web search configuration.
 
 import { settings } from "../../state/store.js";
-import { normalizeWebSearchSettings } from "../../api/tavily.js";
+import { normalizeWebSearchSettings } from "../../../shared/tavily.js";
 import { renderToolAccessSettings } from "./tool-access.js";
 
 function renderWebSearchSettings() {
