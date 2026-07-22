@@ -1,8 +1,5 @@
-// sidepanel/ui/navigation.js - Chat/settings view switching.
+import { ensureProviderModelsLoaded } from "./model-picker.js";
 
-import { ensureOpenRouterModelsLoaded } from "./model-picker.js";
-
-// Settings Toggle Panel
 export function initSettingsToggle() {
   const toggleSettingsBtn = document.getElementById("toggle-settings-btn");
   const backToChatBtn = document.getElementById("back-to-chat-btn");
@@ -40,7 +37,7 @@ export function switchView(viewName) {
     if (headerNewChatBtn) headerNewChatBtn.classList.add("hidden");
     if (headerExportChatBtn) headerExportChatBtn.classList.add("hidden");
     if (headerClearChatBtn) headerClearChatBtn.classList.add("hidden");
-    ensureOpenRouterModelsLoaded();
+    ensureProviderModelsLoaded();
   } else {
     if (settingsView) settingsView.classList.remove("active");
     if (chatView) chatView.classList.add("active");

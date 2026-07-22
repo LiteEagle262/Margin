@@ -1,6 +1,3 @@
-// sidepanel/lib/markdown.js - Minimal markdown-to-HTML renderer for chat
-// messages, plus the click bindings for the code blocks it emits.
-
 import { escapeHtml } from "./format.js";
 
 export function formatMarkdown(text) {

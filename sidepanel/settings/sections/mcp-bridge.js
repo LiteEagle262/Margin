@@ -1,6 +1,3 @@
-// Settings section: local MCP bridge (WebSocket relay run by the background
-// service worker). Renders status, config snippet, and token management.
-
 import { settings } from "../../state/store.js";
 import { showToast } from "../../lib/toast.js";
 import { normalizeMcpBridgeSettings, DEFAULT_MCP_BRIDGE_PORT } from "../../../shared/settings-schema.js";
@@ -8,12 +5,12 @@ import { normalizeMcpBridgeSettings, DEFAULT_MCP_BRIDGE_PORT } from "../../../sh
 function buildMcpBridgeConfigSnippet(config) {
   const payload = {
     mcpServers: {
-      scrapeflow: {
+      margin: {
         command: "node",
         args: ["ABSOLUTE_PATH_TO_EXTENSION/mcp-server/index.js"],
         env: {
-          SCRAPEFLOW_MCP_PORT: String(config.port || DEFAULT_MCP_BRIDGE_PORT),
-          ...(config.token ? { SCRAPEFLOW_MCP_TOKEN: config.token } : {})
+          MARGIN_MCP_PORT: String(config.port || DEFAULT_MCP_BRIDGE_PORT),
+          ...(config.token ? { MARGIN_MCP_TOKEN: config.token } : {})
         }
       }
     }
@@ -129,6 +126,7 @@ function initMcpBridgeSettings() {
         tokenInput.value = response.token;
         settings.mcpBridge.token = response.token;
         updateSnippet();
+        tokenInput.dispatchEvent(new Event("change", { bubbles: true }));
         showToast("New auth token generated");
       }
     } catch (err) {

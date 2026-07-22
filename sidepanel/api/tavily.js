@@ -1,7 +1,3 @@
-// sidepanel/api/tavily.js - Web search tools (Tavily provider).
-// Callers pass the raw settings.webSearch object; normalization happens here.
-// No DOM access, no app state.
-
 export const WEB_SEARCH_TOOL_NAMES = new Set(["search_web", "fetch_search_result"]);
 
 export function normalizeWebSearchSettings(raw) {

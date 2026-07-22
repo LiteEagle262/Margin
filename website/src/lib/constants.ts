@@ -1,19 +1,24 @@
-export const GITHUB_URL = "https://github.com/scrapeflow/scrapeflow";
-export const CHROME_STORE_URL = "#";
-export const DOCS_URL = "https://github.com/scrapeflow/scrapeflow#readme";
+export const GITHUB_CONFIGURED = Boolean(process.env.NEXT_PUBLIC_GITHUB_URL);
+export const CHROME_STORE_CONFIGURED = Boolean(process.env.NEXT_PUBLIC_CHROME_STORE_URL);
+export const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "";
+
+export const GITHUB_URL = process.env.NEXT_PUBLIC_GITHUB_URL || "/#open-source";
+export const CHROME_STORE_URL = process.env.NEXT_PUBLIC_CHROME_STORE_URL || "/#open-source";
+export const DOCS_URL = process.env.NEXT_PUBLIC_DOCS_URL || GITHUB_URL;
+export const PRIVACY_URL = "/privacy";
 
 export const NAV_LINKS = [
-  { label: "Features", href: "#features" },
-  { label: "How it works", href: "#how-it-works" },
-  { label: "Open source", href: "#open-source" },
-  { label: "Pricing", href: "#pricing" },
+  { label: "Features", href: "/#features" },
+  { label: "How it works", href: "/#how-it-works" },
+  { label: "Open source", href: "/#open-source" },
+  { label: "Pricing", href: "/#pricing" },
 ] as const;
 
 export const FEATURES = [
   {
     title: "Side panel AI chat",
     description:
-      "OpenRouter-powered assistant lives in Chrome's side panel — always one click away while you browse.",
+      "An OpenAI- or OpenRouter-powered assistant lives in Chrome's side panel — one click away while you browse.",
     icon: "Chat",
   },
   {
@@ -29,9 +34,9 @@ export const FEATURES = [
     icon: "Folder",
   },
   {
-    title: "Any OpenRouter model",
+    title: "Your preferred AI provider",
     description:
-      "Search 300+ models from the settings picker. Bring your own API key — you control cost and provider.",
+      "Connect an eligible ChatGPT account with device-code OAuth, or bring an OpenRouter API key. You choose the provider and model.",
     icon: "Hub",
   },
   {
@@ -51,8 +56,8 @@ export const FEATURES = [
 export const STEPS = [
   {
     step: "01",
-    title: "Install & add your key",
-    description: "Load ScrapeFlow from GitHub or the Chrome Web Store. Paste your OpenRouter API key in settings.",
+    title: "Install & connect",
+    description: "Load Margin from GitHub or the Chrome Web Store. Link your ChatGPT account or add an OpenRouter key.",
   },
   {
     step: "02",
@@ -72,53 +77,17 @@ export const PLANS = [
     name: "Open Source",
     price: "$0",
     period: "forever",
-    description: "Self-host the extension. Perfect for builders who bring their own OpenRouter key.",
+    description: "Self-host the extension and connect your preferred supported AI provider.",
     highlighted: false,
-    cta: "View on GitHub",
+    cta: GITHUB_CONFIGURED ? "View on GitHub" : "Open-source release pending",
     ctaHref: GITHUB_URL,
     features: [
       "Full extension source (MIT)",
       "Browser automation tools",
-      "OpenRouter model search",
+      "ChatGPT OAuth and OpenRouter support",
       "File workspace & chat history",
       "MCP server connections",
-      "Community support via GitHub",
-    ],
-  },
-  {
-    id: "pro",
-    name: "Pro",
-    price: "$12",
-    period: "/ month",
-    description: "Managed experience with cloud sync and priority features for solo power users.",
-    highlighted: true,
-    cta: "Start Pro trial",
-    ctaHref: "#pricing",
-    features: [
-      "Everything in Open Source",
-      "Cloud-synced chats & files",
-      "Priority model routing",
-      "Advanced MCP presets",
-      "Unlimited chat sessions",
-      "Email support",
-    ],
-  },
-  {
-    id: "team",
-    name: "Team",
-    price: "$39",
-    period: "/ seat / mo",
-    description: "Shared workspaces and governance for scraping teams and agencies.",
-    highlighted: false,
-    cta: "Contact sales",
-    ctaHref: "mailto:hello@scrapeflow.dev",
-    features: [
-      "Everything in Pro",
-      "Shared team workspaces",
-      "Centralized API key vault",
-      "Role-based access",
-      "Usage analytics dashboard",
-      "SLA & dedicated support",
+      "Contribution-ready repository",
     ],
   },
 ] as const;

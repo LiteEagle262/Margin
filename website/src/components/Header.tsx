@@ -14,7 +14,13 @@ import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemText from "@mui/material/ListItemText";
 import { useState } from "react";
-import { CHROME_STORE_URL, GITHUB_URL, NAV_LINKS } from "@/lib/constants";
+import {
+  CHROME_STORE_CONFIGURED,
+  CHROME_STORE_URL,
+  GITHUB_CONFIGURED,
+  GITHUB_URL,
+  NAV_LINKS,
+} from "@/lib/constants";
 
 export default function Header() {
   const [open, setOpen] = useState(false);
@@ -36,7 +42,7 @@ export default function Header() {
                 mr: 2,
               }}
             >
-              ScrapeFlow
+              Margin
             </Typography>
 
             <Box sx={{ display: { xs: "none", md: "flex" }, gap: 0.5, flex: 1 }}>
@@ -48,18 +54,20 @@ export default function Header() {
             </Box>
 
             <Box sx={{ display: { xs: "none", sm: "flex" }, gap: 1, alignItems: "center" }}>
-              <Button
-                href={GITHUB_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                color="inherit"
-                size="small"
-                startIcon={<GitHubIcon fontSize="small" />}
-              >
-                GitHub
-              </Button>
+              {GITHUB_CONFIGURED && (
+                <Button
+                  href={GITHUB_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  color="inherit"
+                  size="small"
+                  startIcon={<GitHubIcon fontSize="small" />}
+                >
+                  GitHub
+                </Button>
+              )}
               <Button href={CHROME_STORE_URL} variant="contained" color="primary" size="small">
-                Add to Chrome
+                {CHROME_STORE_CONFIGURED ? "Add to Chrome" : "Release details"}
               </Button>
             </Box>
 
@@ -83,11 +91,13 @@ export default function Header() {
                 <ListItemText primary={link.label} />
               </ListItemButton>
             ))}
-            <ListItemButton component="a" href={GITHUB_URL} target="_blank" rel="noopener noreferrer">
-              <ListItemText primary="GitHub" />
-            </ListItemButton>
+            {GITHUB_CONFIGURED && (
+              <ListItemButton component="a" href={GITHUB_URL} target="_blank" rel="noopener noreferrer">
+                <ListItemText primary="GitHub" />
+              </ListItemButton>
+            )}
             <ListItemButton component="a" href={CHROME_STORE_URL}>
-              <ListItemText primary="Add to Chrome" />
+              <ListItemText primary={CHROME_STORE_CONFIGURED ? "Add to Chrome" : "Release details"} />
             </ListItemButton>
           </List>
         </Box>

@@ -1,13 +1,19 @@
-// sidepanel/ui/model-picker.js - Model search/picker dropdown, active-model
-// badge, and the OpenRouter balance badge.
-
 import { settings, openRouterModels, setOpenRouterModels, openRouterModelsLoading, setOpenRouterModelsLoading, setOpenRouterEndpoints, isAgentRunning } from "../state/store.js";
 import { escapeHtml, formatModelPrice, formatUsdBalance } from "../lib/format.js";
-import { fetchModels, fetchCredits, fetchKeyBalance } from "../api/openrouter.js";
+import { fetchCredits, fetchKeyBalance } from "../api/openrouter.js";
+import { fetchProviderModels, getProviderLabel } from "../api/provider.js";
+import { getOpenAIAuthStatus } from "../api/openai.js";
 import { renderProviderRoutingSettings } from "../settings/sections/provider-routing.js";
+import { syncReasoningForActiveModel } from "../settings/sections/reasoning.js";
 import { updateUsageBar } from "./usage-bar.js";
 
 let openRouterBalanceRequestId = 0;
+let providerModelsRequestId = 0;
+let openAIProviderReady = false;
+
+export function isActiveProviderReady() {
+  return settings.aiProvider === "openai" ? openAIProviderReady : Boolean(settings.apiKey);
+}
 
 export function updateModelBadge() {
   const activeModelBadge = document.getElementById("active-model-badge");
@@ -15,8 +21,15 @@ export function updateModelBadge() {
   
   if (!activeModelBadge) return;
   
-  if (!settings.apiKey) {
-    activeModelBadge.textContent = "No API Key";
+  if (!settings.dataSharingConsent) {
+    activeModelBadge.textContent = "Consent";
+    activeModelBadge.classList.remove("active");
+    if (sendBtn && !isAgentRunning) sendBtn.disabled = true;
+    return;
+  }
+
+  if (!isActiveProviderReady()) {
+    activeModelBadge.textContent = settings.aiProvider === "openai" ? "Link OpenAI" : "No API Key";
     activeModelBadge.classList.remove("active");
     if (sendBtn && !isAgentRunning) sendBtn.disabled = true;
     return;
@@ -26,7 +39,6 @@ export function updateModelBadge() {
   activeModelBadge.textContent = displayModel.split("/").pop();
   activeModelBadge.classList.add("active");
   if (sendBtn && !isAgentRunning) sendBtn.disabled = false;
-  // Model change shifts the context window + pricing rates the meter uses.
   updateUsageBar();
 }
 
@@ -43,8 +55,30 @@ function setOpenRouterBalanceBadge(text, { state = "", title = "OpenRouter balan
   badge.classList.toggle("error", state === "error");
 }
 
-export async function refreshOpenRouterBalance() {
+export async function refreshProviderBadge() {
   const requestId = ++openRouterBalanceRequestId;
+  const badge = document.getElementById("openrouter-balance-badge");
+
+  if (settings.aiProvider !== "openrouter") {
+    badge?.classList.add("hidden");
+    try {
+      const status = await getOpenAIAuthStatus();
+      openAIProviderReady = status.linked === true;
+    } catch {
+      openAIProviderReady = false;
+    }
+    updateModelBadge();
+    return;
+  }
+  openAIProviderReady = false;
+  badge?.classList.remove("hidden");
+
+  if (!settings.dataSharingConsent) {
+    setOpenRouterBalanceBadge("Consent required", {
+      title: "Accept the provider-processing disclosure before connecting OpenRouter"
+    });
+    return;
+  }
 
   if (!settings.apiKey) {
     setOpenRouterBalanceBadge("Balance --", {
@@ -98,9 +132,9 @@ export async function refreshOpenRouterBalance() {
   }
 }
 
-// ----------------------------------------------------
-// OPENROUTER MODEL PICKER
-// ----------------------------------------------------
+// Retained for compatibility with older provider-neutral callers.
+export const refreshOpenRouterBalance = refreshProviderBadge;
+
 export function getModelDisplayName(modelId) {
   const match = openRouterModels.find(m => m.id === modelId);
   return match ? match.name : modelId;
@@ -122,19 +156,56 @@ function setModelPickerStatus(message, isError = false) {
   statusEl.style.color = isError ? "var(--danger)" : "";
 }
 
-async function fetchOpenRouterModels() {
-  const apiKeyInput = document.getElementById("openrouter-api-key");
+async function fetchActiveProviderModels() {
+  const requestId = ++providerModelsRequestId;
+  const providerId = settings.aiProvider;
+  const apiKeyInput = document.getElementById("provider-api-key");
   const apiKey = apiKeyInput ? apiKeyInput.value.trim() : settings.apiKey;
-  if (!apiKey) {
-    setModelPickerStatus("Add your OpenRouter API key above to load models.", true);
+  const providerLabel = getProviderLabel(providerId);
+  if (!settings.dataSharingConsent) {
+    setModelPickerStatus("Accept the data-sharing disclosure before connecting a provider.", true);
+    return [];
+  }
+  if (providerId === "openai") {
+    await refreshProviderBadge();
+    if (requestId !== providerModelsRequestId || settings.aiProvider !== providerId) return [];
+    if (!openAIProviderReady) {
+      setModelPickerStatus("Link your ChatGPT account first.", true);
+      return [];
+    }
+  } else if (!apiKey) {
+    setModelPickerStatus(`Add your ${providerLabel} key above to load models.`, true);
     return [];
   }
 
   setOpenRouterModelsLoading(true);
-  setModelPickerStatus("Loading models from OpenRouter...");
+  setModelPickerStatus(`Loading models from ${providerLabel}...`);
 
   try {
-    setOpenRouterModels(await fetchModels(apiKey));
+    const models = await fetchProviderModels(providerId, apiKey);
+    const currentKey = document.getElementById("provider-api-key")?.value.trim() || settings.apiKey;
+    if (
+      requestId !== providerModelsRequestId ||
+      settings.aiProvider !== providerId ||
+      (providerId === "openrouter" && currentKey !== apiKey)
+    ) return [];
+
+    setOpenRouterModels(models);
+    if (providerId === "openai" && !openRouterModels.some((model) => model.id === settings.model)) {
+      const defaultModel = openRouterModels.find((model) => model.isDefault) || openRouterModels[0];
+      if (defaultModel) {
+        settings.model = defaultModel.id;
+        settings.providerConfigs.openai.model = defaultModel.id;
+        const selectedInput = document.getElementById("model-selected");
+        if (selectedInput) selectedInput.value = defaultModel.id;
+        document.getElementById("model-search")?.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+
+    const reasoningSync = syncReasoningForActiveModel();
+    if (reasoningSync.changed) {
+      document.getElementById("reasoning-effort")?.dispatchEvent(new Event("change", { bubbles: true }));
+    }
 
     setModelPickerStatus(`${openRouterModels.length} models loaded. Search to pick one.`);
     syncModelPickerValue();
@@ -144,14 +215,16 @@ async function fetchOpenRouterModels() {
     setModelPickerStatus(err.message, true);
     return [];
   } finally {
-    setOpenRouterModelsLoading(false);
+    if (requestId === providerModelsRequestId) setOpenRouterModelsLoading(false);
   }
 }
 
-export async function ensureOpenRouterModelsLoaded() {
+export async function ensureProviderModelsLoaded() {
   if (openRouterModels.length > 0 || openRouterModelsLoading) return;
-  await fetchOpenRouterModels();
+  await fetchActiveProviderModels();
 }
+
+export const ensureOpenRouterModelsLoaded = ensureProviderModelsLoaded;
 
 function filterModels(query) {
   const q = query.trim().toLowerCase();
@@ -169,8 +242,14 @@ function renderModelDropdown(models) {
 
   dropdown.innerHTML = "";
 
-  if (!settings.apiKey && !document.getElementById("openrouter-api-key")?.value.trim()) {
-    dropdown.innerHTML = `<div class="model-dropdown-empty">Add your API key to load models.</div>`;
+  if (!settings.dataSharingConsent) {
+    dropdown.innerHTML = `<div class="model-dropdown-empty">Accept the data-sharing disclosure first.</div>`;
+    dropdown.classList.remove("hidden");
+    return;
+  }
+
+  if (!isActiveProviderReady() && !document.getElementById("provider-api-key")?.value.trim()) {
+    dropdown.innerHTML = `<div class="model-dropdown-empty">${settings.aiProvider === "openai" ? "Link OpenAI to load models." : "Add your API key to load models."}</div>`;
     dropdown.classList.remove("hidden");
     return;
   }
@@ -201,6 +280,8 @@ function renderModelDropdown(models) {
     btn.dataset.modelId = model.id;
 
     const supportsTools = Array.isArray(model.supported_parameters) && model.supported_parameters.includes("tools");
+    const supportsReasoning = (model.reasoning && typeof model.reasoning === "object") ||
+      (Array.isArray(model.supported_parameters) && model.supported_parameters.includes("reasoning"));
     const inputModalities = Array.isArray(model.architecture?.input_modalities)
       ? model.architecture.input_modalities.filter(item => item && item !== "text").join("+")
       : "";
@@ -208,7 +289,8 @@ function renderModelDropdown(models) {
       model.context_length ? `${Math.round(model.context_length / 1000)}k ctx` : "",
       formatModelPrice(model.pricing),
       inputModalities ? `input: ${inputModalities}` : "",
-      supportsTools ? "tools" : ""
+      supportsTools ? "tools" : "",
+      supportsReasoning ? "reasoning" : ""
     ].filter(Boolean);
 
     btn.innerHTML = `
@@ -230,19 +312,22 @@ function selectModel(model) {
   const dropdown = document.getElementById("model-dropdown");
 
   settings.model = model.id;
+  settings.providerConfigs[settings.aiProvider].model = model.id;
+  syncReasoningForActiveModel();
   if (modelSelected) modelSelected.value = model.id;
   if (modelSearch) modelSearch.value = model.name || model.id;
   if (dropdown) dropdown.classList.add("hidden");
   setOpenRouterEndpoints([]);
   settings.providerRouting.order = [];
   renderProviderRoutingSettings();
+  modelSearch?.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 export function initModelPicker() {
   const modelSearch = document.getElementById("model-search");
   const modelPicker = document.getElementById("model-picker");
   const refreshBtn = document.getElementById("refresh-models-btn");
-  const apiKeyInput = document.getElementById("openrouter-api-key");
+  const apiKeyInput = document.getElementById("provider-api-key");
   let searchTimer = null;
 
   if (!modelSearch) return;
@@ -250,11 +335,13 @@ export function initModelPicker() {
   syncModelPickerValue();
 
   modelSearch.addEventListener("focus", async () => {
-    await ensureOpenRouterModelsLoaded();
+    await ensureProviderModelsLoaded();
     renderModelDropdown(filterModels(modelSearch.value));
   });
 
   modelSearch.addEventListener("input", () => {
+    const modelSelected = document.getElementById("model-selected");
+    if (modelSelected) modelSelected.value = "";
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       renderModelDropdown(filterModels(modelSearch.value));
@@ -283,6 +370,18 @@ export function initModelPicker() {
       if (pick && pick.dataset.modelId) {
         const model = openRouterModels.find(m => m.id === pick.dataset.modelId);
         if (model) selectModel(model);
+      } else {
+        const customModelId = modelSearch.value.trim();
+        if (customModelId) {
+          settings.model = customModelId;
+          settings.providerConfigs[settings.aiProvider].model = customModelId;
+          syncReasoningForActiveModel();
+          const modelSelected = document.getElementById("model-selected");
+          if (modelSelected) modelSelected.value = customModelId;
+          if (dropdown) dropdown.classList.add("hidden");
+          setModelPickerStatus(`Using custom model ID: ${customModelId}`);
+          modelSearch.dispatchEvent(new Event("change", { bubbles: true }));
+        }
       }
     } else if (e.key === "Escape") {
       if (dropdown) dropdown.classList.add("hidden");
@@ -301,17 +400,19 @@ export function initModelPicker() {
     refreshBtn.addEventListener("click", async (e) => {
       e.preventDefault();
       setOpenRouterModels([]);
-      await fetchOpenRouterModels();
+      await fetchActiveProviderModels();
       renderModelDropdown(filterModels(modelSearch.value));
     });
   }
 
   if (apiKeyInput) {
     apiKeyInput.addEventListener("change", () => {
+      if (settings.aiProvider !== "openrouter") return;
       setOpenRouterModels([]);
       settings.apiKey = apiKeyInput.value.trim();
+      settings.providerConfigs[settings.aiProvider].apiKey = settings.apiKey;
       updateModelBadge();
-      refreshOpenRouterBalance();
+      refreshProviderBadge();
     });
   }
 }

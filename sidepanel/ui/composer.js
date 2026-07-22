@@ -1,6 +1,3 @@
-// sidepanel/ui/composer.js - Message input: send/stop button modes, chat
-// toolbar events, file upload attachments, and the send pipeline entry.
-
 import { settings, chats, currentChatId, uploadedAttachments, setUploadedAttachments, isAgentRunning, agentStopRequested } from "../state/store.js";
 import { saveChats } from "../state/persistence.js";
 import { escapeHtml, formatBytes } from "../lib/format.js";
@@ -13,7 +10,8 @@ import { validateAttachmentForActiveModel, getAttachmentKind } from "../agent/co
 import { makeFallbackChatTitle } from "../features/chat-titles.js";
 import { exportCurrentChatForContext } from "../features/chat-export.js";
 import { createNewChatSession } from "../features/chats.js";
-import { refreshOpenRouterBalance } from "./model-picker.js";
+import { isActiveProviderReady, refreshProviderBadge } from "./model-picker.js";
+import { getProviderLabel } from "../api/provider.js";
 import { switchView } from "./navigation.js";
 
 export function setSendButtonMode(mode) {
@@ -37,13 +35,10 @@ export function setSendButtonMode(mode) {
 
   const hasContent = (chatTextarea && chatTextarea.value.trim()) || uploadedAttachments.length > 0;
   sendBtn.classList.toggle("active", hasContent);
-  sendBtn.disabled = !settings.apiKey;
+  sendBtn.disabled = !isActiveProviderReady() || !settings.dataSharingConsent;
 }
 
 
-// ----------------------------------------------------
-// CHAT LAYOUTS & EVENT HANDLERS
-// ----------------------------------------------------
 export function initChatEvents() {
   const sendBtn = document.getElementById("send-btn");
   const chatTextarea = document.getElementById("chat-textarea");
@@ -64,6 +59,10 @@ export function initChatEvents() {
 
   if (headerNewChatBtn) {
     headerNewChatBtn.addEventListener("click", () => {
+      if (isAgentRunning) {
+        showToast("Stop the current response before starting another chat");
+        return;
+      }
       createNewChatSession();
       showToast("Started new chat session");
     });
@@ -77,6 +76,10 @@ export function initChatEvents() {
 
   if (headerClearChatBtn) {
     headerClearChatBtn.addEventListener("click", async () => {
+      if (isAgentRunning) {
+        showToast("Stop the current response before clearing this chat");
+        return;
+      }
       if (currentChatId && chats[currentChatId]) {
         if (confirm("Are you sure you want to clear this chat's messages?")) {
           chats[currentChatId].messages = [];
@@ -94,7 +97,7 @@ export function initChatEvents() {
 
   if (balanceBtn) {
     balanceBtn.addEventListener("click", () => {
-      refreshOpenRouterBalance();
+      refreshProviderBadge();
     });
   }
 
@@ -123,7 +126,6 @@ export function initChatEvents() {
 }
 
 
-// Send user message and kick off the response cycle
 export async function handleSendMessage() {
   const chatTextarea = document.getElementById("chat-textarea");
   const sendBtn = document.getElementById("send-btn");
@@ -133,13 +135,24 @@ export async function handleSendMessage() {
   const userInput = chatTextarea.value.trim();
   if (!userInput && uploadedAttachments.length === 0) return;
 
-  if (!settings.apiKey) {
-    showToast("Please configure your OpenRouter API Key first!");
+  if (!settings.dataSharingConsent) {
+    showToast("Review and accept the data-sharing disclosure first.");
     switchView("settings");
     return;
   }
 
-  // Clear inputs
+  if (settings.aiProvider === "openai") {
+    await refreshProviderBadge();
+  }
+  if (!isActiveProviderReady()) {
+    showToast(settings.aiProvider === "openai"
+      ? "Link your ChatGPT account first."
+      : `Add your ${getProviderLabel(settings.aiProvider)} key first.`);
+    switchView("settings");
+    return;
+  }
+
+  const runChatId = currentChatId;
   chatTextarea.value = "";
   chatTextarea.style.height = "auto";
   if (sendBtn) sendBtn.classList.remove("active");
@@ -148,39 +161,32 @@ export async function handleSendMessage() {
   setUploadedAttachments([]);
   renderPreviewArea();
 
-  // Save session state details
-  const activeChat = chats[currentChatId];
+  const activeChat = chats[runChatId];
   activeChat.timestamp = Date.now();
   
-  // Set chat title dynamically if first user message
   if (activeChat.messages.length === 0) {
     activeChat.title = makeFallbackChatTitle(userInput);
     activeChat.titleMode = "auto";
     activeChat.titleGeneratedAt = null;
   }
 
-  // Append user message
   const messageIndex = activeChat.messages.push({ role: "user", content: userInput, attachments: attachmentsToSend }) - 1;
   appendMessageUI("user", userInput, attachmentsToSend, true, { messageIndex });
   await saveChats();
   renderHistoryList();
 
-  // Kick off OpenRouter Agent loop
-  beginAgentRun();
+  beginAgentRun(runChatId);
   try {
-    await runAgentCycle();
+    await runAgentCycle(runChatId);
   } finally {
     if (agentStopRequested) {
-      await recordAgentStopped();
+      await recordAgentStopped(runChatId);
     }
     endAgentRun();
   }
 }
 
 
-// ----------------------------------------------------
-// FILE UPLOAD ATTACHMENTS
-// ----------------------------------------------------
 export function initUploadEvents() {
   const attachBtn = document.getElementById("attach-screenshot-btn");
   const fileInput = document.getElementById("screenshot-input");

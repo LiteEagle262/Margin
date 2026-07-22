@@ -1,2 +1,30 @@
+# macOS and editor files
 .DS_Store
-**/.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# JavaScript dependencies and build output
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+coverage/
+dist/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.margin-cli/
+*.pem
+*.p12
+*.pfx
+*.key
+*.crt
+*.log
+
+# Go build output
+bin/
+coverage.out

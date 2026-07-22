@@ -1,22 +1,49 @@
-// sidepanel/api/openrouter.js - OpenRouter HTTP client.
-// Pure network functions: take explicit params, throw on HTTP errors,
-// no DOM access, no app state.
-
 import { formatUsdBalance } from "../lib/format.js";
 
 const API_BASE = "https://openrouter.ai/api/v1";
+const REASONING_EFFORT_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
+const OPENROUTER_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
-function buildHeaders(apiKey, appTitle = "N/A", json = false) {
+export function normalizeOpenRouterReasoning(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const supportedEfforts = [];
+  const seen = new Set();
+  const rawEfforts = raw.supported_efforts === null
+    ? OPENROUTER_REASONING_EFFORTS
+    : Array.isArray(raw.supported_efforts)
+      ? raw.supported_efforts
+      : [];
+  for (const value of rawEfforts) {
+    const effort = typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (
+      !REASONING_EFFORT_PATTERN.test(effort) ||
+      (raw.mandatory === true && effort === "none") ||
+      seen.has(effort)
+    ) continue;
+    seen.add(effort);
+    supportedEfforts.push(effort);
+  }
+  if (raw.mandatory === false && !seen.has("none")) supportedEfforts.unshift("none");
+  const defaultEffort = typeof raw.default_effort === "string"
+    ? raw.default_effort.trim().toLowerCase()
+    : "";
+  return {
+    supported_efforts: supportedEfforts,
+    default_effort: supportedEfforts.includes(defaultEffort) ? defaultEffort : "",
+    default_enabled: typeof raw.default_enabled === "boolean" ? raw.default_enabled : null,
+    mandatory: raw.mandatory === true,
+  };
+}
+
+function buildHeaders(apiKey, appTitle = "Margin", json = false) {
   const headers = {
     Authorization: `Bearer ${apiKey}`,
-    "HTTP-Referer": "https://github.com/NA",
     "X-Title": appTitle,
   };
   if (json) headers["Content-Type"] = "application/json";
   return headers;
 }
 
-// Returns text-output models sorted by display name.
 export async function fetchModels(apiKey) {
   const response = await fetch(`${API_BASE}/models?output_modalities=text`, {
     headers: buildHeaders(apiKey),
@@ -30,10 +57,13 @@ export async function fetchModels(apiKey) {
   const data = await response.json();
   return (data.data || [])
     .filter((model) => model.id)
+    .map((model) => ({
+      ...model,
+      reasoning: normalizeOpenRouterReasoning(model.reasoning),
+    }))
     .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
 }
 
-// Returns "" when the model id has no author/slug form.
 export function modelEndpointsUrl(modelId) {
   const parts = String(modelId || "")
     .split("/")
@@ -60,8 +90,6 @@ export async function fetchModelEndpoints(apiKey, modelId) {
   return data.data?.endpoints || [];
 }
 
-// Returns { ok: true, totalCredits, totalUsage, balance } on success or
-// { ok: false, status, errorText } when the credits endpoint rejects.
 export async function fetchCredits(apiKey) {
   const response = await fetch(`${API_BASE}/credits`, {
     headers: buildHeaders(apiKey),
@@ -86,8 +114,6 @@ export async function fetchCredits(apiKey) {
   };
 }
 
-// Fallback balance source for keys without credits access.
-// Returns { label, title } for the badge, or null when unavailable.
 export async function fetchKeyBalance(apiKey) {
   const response = await fetch(`${API_BASE}/key`, {
     headers: buildHeaders(apiKey),
@@ -124,7 +150,7 @@ export async function fetchKeyBalance(apiKey) {
 export async function fetchChatCompletion(
   apiKey,
   requestBody,
-  { signal = undefined, appTitle = "N/A" } = {},
+  { signal = undefined, appTitle = "Margin" } = {},
 ) {
   const response = await fetch(`${API_BASE}/chat/completions`, {
     method: "POST",

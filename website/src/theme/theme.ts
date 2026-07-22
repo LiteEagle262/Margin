@@ -2,7 +2,7 @@
 
 import { createTheme } from "@mui/material/styles";
 
-export const scrapeflowTheme = createTheme({
+export const marginTheme = createTheme({
   palette: {
     mode: "dark",
     primary: {
@@ -26,7 +26,7 @@ export const scrapeflowTheme = createTheme({
     success: { main: "#4ade80" },
   },
   typography: {
-    fontFamily: '"DM Sans", "Segoe UI", sans-serif',
+    fontFamily: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     h1: {
       fontWeight: 700,
       letterSpacing: "-0.03em",

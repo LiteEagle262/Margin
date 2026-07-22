@@ -1,21 +1,64 @@
-// sidepanel/agent/run-loop.js - The agent conversation cycle: request,
-// tool execution, and run lifecycle (begin/stop/end).
-
-import { settings, chats, currentChatId, isAgentRunning, agentStopRequested, agentAbortController, beginAgentRunState, endAgentRunState, requestAgentStop, mcpToolRegistry } from "../state/store.js";
+import {
+  activeAgentChatId,
+  agentAbortController,
+  agentStopRequested,
+  beginAgentRunState,
+  chats,
+  currentChatId,
+  endAgentRunState,
+  isAgentRunning,
+  mcpToolRegistry,
+  requestAgentStop,
+  settings,
+} from "../state/store.js";
 import { saveChats } from "../state/persistence.js";
-import { fetchChatCompletion } from "../api/openrouter.js";
+import { fetchProviderChatCompletion } from "../api/provider.js";
 import { buildReasoningPreferences } from "../settings/sections/reasoning.js";
 import { buildProviderPreferences } from "../settings/sections/provider-routing.js";
-import { buildApiMessagesForChat, messagesContainFileParts } from "./context.js";
-import { getAllAgentTools, executeTool, evaluateToolLoopGuard, refreshMcpTools } from "../tools/execute.js";
+import {
+  buildApiMessagesForChat,
+  messagesContainFileParts,
+} from "./context.js";
+import {
+  evaluateToolLoopGuard,
+  executeTool,
+  getAllAgentTools,
+  guardToolCallBeforeExecution,
+  refreshMcpTools,
+} from "../tools/execute.js";
 import { appendMessageUI, extractReasoningText, sanitizeToolDisplay } from "../ui/chat-view.js";
 import { setSendButtonMode } from "../ui/composer.js";
-import { recordUsage } from "../ui/usage-bar.js";
-import { refreshOpenRouterBalance } from "../ui/model-picker.js";
+import { recordUsageForChat } from "../ui/usage-bar.js";
+import { refreshProviderBadge } from "../ui/model-picker.js";
 import { maybeAutoGenerateChatTitle } from "../features/chat-titles.js";
+import {
+  classifyProviderResponse,
+  describeEmptyProviderResponse,
+  MAX_OPENAI_CONTINUATION_TURNS,
+} from "./provider-response.js";
 
-export function beginAgentRun() {
-  beginAgentRunState();
+function visibleChat(chatId) {
+  return chatId && currentChatId === chatId;
+}
+
+function appendForChat(chatId, role, content, attachments = [], options = {}) {
+  if (visibleChat(chatId)) appendMessageUI(role, content, attachments, true, options);
+}
+
+function addLoadingIndicator(chatId) {
+  if (!visibleChat(chatId)) return null;
+  const history = document.getElementById("chat-history");
+  if (!history) return null;
+  const loading = document.createElement("div");
+  loading.className = "message assistant loading-msg";
+  loading.innerHTML = `<div class="message-content"><span class="typing-indicator" aria-label="Thinking"><span></span><span></span><span></span></span></div>`;
+  history.appendChild(loading);
+  history.scrollTop = history.scrollHeight;
+  return loading;
+}
+
+export function beginAgentRun(chatId = currentChatId) {
+  beginAgentRunState(chatId);
   setSendButtonMode("stop");
 }
 
@@ -27,241 +70,249 @@ export function endAgentRun() {
 export function stopAgent() {
   if (!isAgentRunning) return;
   requestAgentStop();
-  if (agentAbortController) {
-    agentAbortController.abort();
-  }
+  agentAbortController?.abort();
 }
 
-export async function recordAgentStopped() {
-  if (!currentChatId || !chats[currentChatId]) return;
-  const activeChat = chats[currentChatId];
-  const lastMsg = activeChat.messages[activeChat.messages.length - 1];
-  if (lastMsg?.content === "Response stopped.") return;
-  const messageIndex = activeChat.messages.push({ role: "assistant", content: "Response stopped." }) - 1;
-  appendMessageUI("assistant", "*Response stopped.*", [], true, { messageIndex });
+export async function recordAgentStopped(chatId = activeAgentChatId || currentChatId) {
+  const chat = chats[chatId];
+  if (!chat) return;
+  const lastMessage = chat.messages[chat.messages.length - 1];
+  if (lastMessage?.content === "Response stopped.") return;
+  const messageIndex = chat.messages.push({ role: "assistant", content: "Response stopped." }) - 1;
+  appendForChat(chatId, "assistant", "*Response stopped.*", [], { messageIndex });
   await saveChats();
 }
 
+async function ensureMcpRegistry() {
+  if (mcpToolRegistry.size === 0 && settings.mcpServers.some((server) => server.enabled !== false && server.url)) {
+    await refreshMcpTools();
+  }
+}
 
-export async function runAgentCycle() {
-  const chatHistory = document.getElementById("chat-history");
-  if (!chatHistory || !currentChatId || agentStopRequested) return;
+function serializeToolResult(result) {
+  if (result && typeof result === "object" && result.screenshot) {
+    return { content: String(result.message || "Screenshot captured."), screenshot: result.screenshot };
+  }
+  if (result && typeof result === "object" && result.type === "file") {
+    return {
+      content: JSON.stringify({
+        success: true,
+        path: result.path,
+        action: result.action,
+        lines: result.lines,
+        message: result.message,
+      }),
+      file: result,
+    };
+  }
+  return {
+    content: typeof result === "object" ? JSON.stringify(result, null, 2) : String(result),
+  };
+}
 
-  const activeChat = chats[currentChatId];
+async function runProviderCycle(chatId, chat, loading, disableTools, continuationTurns) {
+  const apiMessages = buildApiMessagesForChat(chat);
+  const reasoningPreferences = buildReasoningPreferences();
+  const requestBody = {
+    model: settings.model,
+    messages: apiMessages,
+    tools: disableTools ? [] : getAllAgentTools(),
+    usage: { include: true },
+  };
+  if (reasoningPreferences) requestBody.reasoning = reasoningPreferences;
+  if (settings.aiProvider === "openrouter") {
+    requestBody.temperature = 0.2;
+    const providerPreferences = buildProviderPreferences();
+    if (providerPreferences) requestBody.provider = providerPreferences;
+    if (messagesContainFileParts(apiMessages)) {
+      requestBody.plugins = [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }];
+    }
+  }
 
-  // 1. Render Thinking Loader
-  const loadingDiv = document.createElement("div");
-  loadingDiv.className = "message assistant loading-msg";
-  loadingDiv.innerHTML = `
-    <div class="message-content">
-      <span class="typing-indicator" aria-label="Thinking">
-        <span></span><span></span><span></span>
-      </span>
-    </div>`;
-  chatHistory.appendChild(loadingDiv);
-  chatHistory.scrollTop = chatHistory.scrollHeight;
+  const data = await fetchProviderChatCompletion(settings.aiProvider, settings.apiKey, requestBody, {
+    signal: agentAbortController?.signal,
+    sessionId: chatId,
+  });
+  loading?.remove();
+  if (!Array.isArray(data.choices) || data.choices.length === 0) {
+    throw new Error("The provider returned no completion choices.");
+  }
+  if (data.usage) recordUsageForChat(data.usage, chatId);
+  refreshProviderBadge();
+
+  const response = data.choices[0].message;
+  const outcome = classifyProviderResponse(settings.aiProvider, response);
+  const reasoning = settings.reasoning.showThinking ? extractReasoningText(response) : "";
+  const appendReasoning = () => {
+    if (!reasoning) return;
+    chat.messages.push({ role: "reasoning", content: reasoning });
+    appendForChat(chatId, "reasoning", reasoning);
+  };
+
+  if (outcome.kind === "message") {
+    appendReasoning();
+    const storedMessage = {
+      role: "assistant",
+      content: outcome.content,
+      ...(settings.aiProvider === "openai" && Array.isArray(response.openai_response_items)
+        ? { openai_response_items: response.openai_response_items }
+        : {}),
+      ...(settings.aiProvider === "openrouter" && Array.isArray(response.reasoning_details)
+        ? { reasoning_details: response.reasoning_details }
+        : {}),
+    };
+    const messageIndex = chat.messages.push(storedMessage) - 1;
+    appendForChat(chatId, "assistant", outcome.content, [], { messageIndex });
+    await saveChats();
+    await maybeAutoGenerateChatTitle(chatId);
+    return;
+  }
+
+  if (outcome.kind === "continue") {
+    appendReasoning();
+    if (continuationTurns >= MAX_OPENAI_CONTINUATION_TURNS) {
+      throw new Error("OpenAI returned repeated intermediate responses without a final message.");
+    }
+    if (outcome.content || outcome.continuationItems.length) {
+      const messageIndex = chat.messages.push({
+        role: "assistant",
+        content: outcome.content,
+        tool_calls: [],
+        ...(outcome.continuationItems.length
+          ? { openai_response_items: outcome.continuationItems }
+          : {}),
+      }) - 1;
+      if (outcome.content) {
+        appendForChat(chatId, "assistant", outcome.content, [], { messageIndex });
+      }
+    }
+    await saveChats();
+    if (!agentStopRequested) {
+      await runAgentCycle(chatId, {
+        disableTools,
+        continuationTurns: continuationTurns + 1,
+      });
+    }
+    return;
+  }
+
+  if (outcome.kind === "empty") {
+    throw new Error(describeEmptyProviderResponse(settings.aiProvider, response));
+  }
+
+  chat.messages.push({
+    role: "assistant",
+    content: response.content || "",
+    tool_calls: response.tool_calls,
+    ...(Array.isArray(response.openai_response_items)
+      ? { openai_response_items: response.openai_response_items }
+      : {}),
+    ...(settings.aiProvider === "openrouter" && Array.isArray(response.reasoning_details)
+      ? { reasoning_details: response.reasoning_details }
+      : {}),
+  });
+  appendReasoning();
+  if (response.content) appendForChat(chatId, "assistant", response.content);
+
+  const screenshots = [];
+  let toolLimitReached = false;
+  for (const toolCall of response.tool_calls) {
+    if (agentStopRequested) return;
+    const name = String(toolCall.function?.name || "");
+    let args = {};
+    try {
+      args = JSON.parse(toolCall.function?.arguments || "{}");
+    } catch {}
+
+    const callStatus = { stage: "call", name, args };
+    if (name !== "write_file") {
+      chat.messages.push({ role: "tool-status", content: callStatus });
+      appendForChat(chatId, "tool-status", callStatus);
+    }
+
+    let result = guardToolCallBeforeExecution(name);
+    if (result) {
+      toolLimitReached = true;
+    } else {
+      result = await executeTool(name, args);
+      result = evaluateToolLoopGuard(name, args, result) || result;
+    }
+
+    const serialized = serializeToolResult(result);
+    chat.messages.push({
+      role: "tool",
+      tool_call_id: toolCall.id,
+      name,
+      content: serialized.content,
+    });
+
+    if (serialized.screenshot) screenshots.push(serialized.screenshot);
+    if (serialized.file) {
+      const artifact = {
+        path: serialized.file.path,
+        action: serialized.file.action,
+        language: serialized.file.language,
+        lines: serialized.file.lines,
+        description: serialized.file.description || "",
+      };
+      chat.messages.push({ role: "file-artifact", content: artifact });
+      appendForChat(chatId, "file-artifact", artifact);
+    } else {
+      const sanitized = sanitizeToolDisplay(name, args, result);
+      const rawSummary = typeof sanitized.result === "string" ? sanitized.result : JSON.stringify(sanitized.result, null, 2);
+      const resultStatus = {
+        stage: "result",
+        name,
+        result: serialized.screenshot
+          ? "Screenshot captured and attached to the next model turn."
+          : rawSummary.length > 2000 ? `${rawSummary.slice(0, 2000)}\n...` : rawSummary,
+      };
+      chat.messages.push({ role: "tool-status", content: resultStatus });
+      appendForChat(chatId, "tool-status", resultStatus);
+    }
+  }
+
+  if (screenshots.length > 0) {
+    chat.messages.push({
+      role: "user",
+      content: "Screenshots captured by the requested browser tools:",
+      images: screenshots,
+    });
+  }
+  await saveChats();
+  if (!agentStopRequested) {
+    await runAgentCycle(chatId, { disableTools: disableTools || toolLimitReached });
+  }
+}
+
+export async function runAgentCycle(
+  chatId = activeAgentChatId || currentChatId,
+  { disableTools = false, continuationTurns = 0 } = {},
+) {
+  if (!chatId || agentStopRequested) return;
+  const chat = chats[chatId];
+  if (!chat) return;
+  const loading = addLoadingIndicator(chatId);
 
   try {
-    const activeModel = settings.model;
-    if (!activeModel) {
-      throw new Error("No AI model selected. Open settings and pick a model.");
+    if (!settings.dataSharingConsent) {
+      throw new Error("Accept the provider-processing disclosure in settings before sending chat or page data.");
     }
-
-    if (mcpToolRegistry.size === 0 && settings.mcpServers.some(s => s.enabled !== false && s.url)) {
-      await refreshMcpTools();
+    if (!settings.model) throw new Error("No AI model selected. Open settings and pick a model.");
+    if (settings.aiProvider === "openrouter" && !settings.apiKey) {
+      throw new Error("Add an OpenRouter API key in settings.");
     }
+    await ensureMcpRegistry();
 
-    // 2. Prepare model transcript from the UI chat history.
-    const apiMessages = buildApiMessagesForChat(activeChat);
-
-    const providerPreferences = buildProviderPreferences();
-    const reasoningPreferences = buildReasoningPreferences({ includeThinkingOutput: true });
-    const requestBody = {
-      model: activeModel,
-      messages: apiMessages,
-      tools: getAllAgentTools(),
-      temperature: 0.2,
-      // Request token + cost accounting on every completion.
-      usage: { include: true }
-    };
-    if (providerPreferences) {
-      requestBody.provider = providerPreferences;
-    }
-    if (reasoningPreferences) {
-      requestBody.reasoning = reasoningPreferences;
-    }
-    if (settings.reasoning.showThinking) {
-      requestBody.include_reasoning = true;
-    }
-    if (messagesContainFileParts(apiMessages)) {
-      requestBody.plugins = [
-        {
-          id: "file-parser",
-          pdf: { engine: "cloudflare-ai" }
-        }
-      ];
-    }
-
-    // 3. OpenRouter fetch request
-    const data = await fetchChatCompletion(settings.apiKey, requestBody, {
-      signal: agentAbortController?.signal
-    });
-    loadingDiv.remove(); // Clear Loader
-
-    if (!data.choices || data.choices.length === 0) {
-      throw new Error("Empty completion choices returned.");
-    }
-
-    // Capture real usage from OpenRouter so the cost meter is grounded in
-    // actuals rather than the chars/4 estimate.
-    if (data.usage) recordUsage(data.usage);
-    refreshOpenRouterBalance();
-
-    const responseMsg = data.choices[0].message;
-    const reasoningText = settings.reasoning.showThinking ? extractReasoningText(responseMsg) : "";
-    const appendReasoningIfPresent = () => {
-      if (!reasoningText) return;
-      activeChat.messages.push({ role: "reasoning", content: reasoningText });
-      appendMessageUI("reasoning", reasoningText);
-    };
-
-    // 4. Handle Tool execution or standard Assistant responses
-    if (responseMsg.tool_calls && responseMsg.tool_calls.length > 0) {
-      // Save assistant tool call in messages log
-      activeChat.messages.push({
-        role: "assistant",
-        content: responseMsg.content || "",
-        tool_calls: responseMsg.tool_calls
-      });
-
-      appendReasoningIfPresent();
-
-      // Display text content if assistant returned thoughts along with tool call
-      if (responseMsg.content) {
-        appendMessageUI("assistant", responseMsg.content);
-      }
-
-      // Execute each tool call sequentially
-      for (const toolCall of responseMsg.tool_calls) {
-        if (agentStopRequested) return;
-
-        const toolName = toolCall.function.name;
-        let toolArgs = {};
-        try {
-          toolArgs = JSON.parse(toolCall.function.arguments);
-        } catch (e) {}
-
-        // Add a structured tool-call card in chat UI
-        const callStatus = {
-          stage: "call",
-          name: toolName,
-          args: toolArgs
-        };
-        if (toolName !== "write_file") {
-          appendMessageUI("tool-status", callStatus);
-          activeChat.messages.push({ role: "tool-status", content: callStatus });
-        }
-
-        // Run the action
-        let result = await executeTool(toolName, toolArgs);
-        const loopGuardResult = evaluateToolLoopGuard(toolName, toolArgs, result);
-        if (loopGuardResult) {
-          result = loopGuardResult;
-        }
-
-        let finalResultContent = "";
-        let screenshotDataUrl = null;
-
-        if (typeof result === "object" && result.screenshot) {
-          finalResultContent = result.message;
-          screenshotDataUrl = result.screenshot;
-        } else if (typeof result === "object" && result.type === "file") {
-          finalResultContent = JSON.stringify({
-            success: true,
-            path: result.path,
-            action: result.action,
-            lines: result.lines,
-            message: result.message
-          });
-
-          const artifact = {
-            path: result.path,
-            action: result.action,
-            language: result.language,
-            lines: result.lines,
-            description: result.description || ""
-          };
-          appendMessageUI("file-artifact", artifact);
-          activeChat.messages.push({ role: "file-artifact", content: artifact });
-        } else if (typeof result === "object") {
-          finalResultContent = JSON.stringify(result, null, 2);
-        } else {
-          finalResultContent = String(result);
-        }
-
-        // Push tool results message log
-        activeChat.messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          name: toolName,
-          content: finalResultContent
-        });
-
-        // If screenshot, attach image in subsequent user feedback block to let AI vision models inspect it
-        if (screenshotDataUrl) {
-          const screenshotStatus = {
-            stage: "result",
-            name: toolName,
-            result: "Screenshot captured and attached to the next model turn."
-          };
-          appendMessageUI("tool-status", screenshotStatus);
-          activeChat.messages.push({ role: "tool-status", content: screenshotStatus });
-          activeChat.messages.push({
-            role: "user",
-            content: "Here is the visual screenshot just captured from the active webpage viewport:",
-            images: [screenshotDataUrl]
-          });
-        } else if (toolName === "write_file") {
-          // File card already shown — skip redundant result card
-        } else {
-          // Truncate display content to keep logs neat
-          const sanitized = sanitizeToolDisplay(toolName, toolArgs, result);
-          const displaySummary = typeof sanitized.result === "string" && sanitized.result.length > 2000
-            ? sanitized.result.slice(0, 2000) + "\n..."
-            : sanitized.result;
-          const resultStatus = {
-            stage: "result",
-            name: toolName,
-            result: displaySummary
-          };
-          appendMessageUI("tool-status", resultStatus);
-          activeChat.messages.push({ role: "tool-status", content: resultStatus });
-        }
-      }
-
-      await saveChats();
-      // Recurse / continue agent reasoning loop
-      if (!agentStopRequested) {
-        await runAgentCycle();
-      }
-
-    } else {
-      // Regular response from assistant
-      const aiReply = responseMsg.content || "";
-      appendReasoningIfPresent();
-      const messageIndex = activeChat.messages.push({ role: "assistant", content: aiReply }) - 1;
-      appendMessageUI("assistant", aiReply, [], true, { messageIndex });
-      await saveChats();
-      await maybeAutoGenerateChatTitle(currentChatId);
-    }
-
+    await runProviderCycle(chatId, chat, loading, disableTools, continuationTurns);
   } catch (error) {
-    if (loadingDiv) loadingDiv.remove();
+    loading?.remove();
     if (error.name === "AbortError" || agentStopRequested) return;
     console.error(error);
-    const errorContent = `Error occurred during agent turn: ${error.message}`;
-    const messageIndex = activeChat.messages.push({ role: "assistant", content: errorContent }) - 1;
-    appendMessageUI("assistant", `**Error:** ${error.message}`, [], true, { messageIndex });
+    if (!chats[chatId]) return;
+    const content = `Error occurred during agent turn: ${error.message}`;
+    const messageIndex = chat.messages.push({ role: "assistant", content, isError: true }) - 1;
+    appendForChat(chatId, "assistant", `**Error:** ${error.message}`, [], { messageIndex });
     await saveChats();
   }
 }

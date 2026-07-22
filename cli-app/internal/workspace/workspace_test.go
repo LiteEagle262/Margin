@@ -64,3 +64,30 @@ func TestWorkspaceFileLifecycle(t *testing.T) {
 		t.Fatalf("unexpected matches: %#v", matches)
 	}
 }
+
+func TestListFilesExcludesMarginConfigDirectory(t *testing.T) {
+	root := t.TempDir()
+	for _, dirName := range []string{".margin-cli"} {
+		if err := os.MkdirAll(filepath.Join(root, dirName), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dirName, "config.json"), []byte("secret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "visible.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ws.ListFiles(".", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != "visible.txt" {
+		t.Fatalf("unexpected entries: %#v", entries)
+	}
+}

@@ -1,14 +1,32 @@
-// Settings section: CDP network capture behavior.
-
 import { settings } from "../../state/store.js";
 import { normalizeNetworkCaptureSettings } from "../../../shared/settings-schema.js";
+
+function setNetworkCaptureBadge(capture) {
+  const badge = document.getElementById("network-capture-status-badge");
+  if (!badge) return;
+
+  if (!capture.autoCaptureLatchedTab) {
+    badge.textContent = "Manual";
+    badge.className = "mcp-bridge-badge";
+    badge.title = "Network capture starts only when requested.";
+    return;
+  }
+
+  badge.textContent = "Auto ready";
+  badge.className = "mcp-bridge-badge connected";
+  badge.title = "Automatic network capture will follow the latched tab.";
+}
+
+function refreshNetworkCaptureBadge() {
+  const capture = normalizeNetworkCaptureSettings(settings.networkCapture);
+  setNetworkCaptureBadge(capture);
+}
 
 function renderNetworkCaptureSettings() {
   const autoInput = document.getElementById("network-auto-capture-latched");
   const persistInput = document.getElementById("network-persist-session");
   const bodiesInput = document.getElementById("network-capture-bodies");
   const redactInput = document.getElementById("network-redact-sensitive");
-  const badge = document.getElementById("network-capture-status-badge");
 
   const capture = normalizeNetworkCaptureSettings(settings.networkCapture);
   if (autoInput) autoInput.checked = capture.autoCaptureLatchedTab === true;
@@ -16,10 +34,18 @@ function renderNetworkCaptureSettings() {
   if (bodiesInput) bodiesInput.checked = capture.captureResponseBodies === true;
   if (redactInput) redactInput.checked = capture.redactSensitiveData === true;
 
-  if (badge) {
-    badge.textContent = capture.autoCaptureLatchedTab ? "Latched tab" : "Manual";
-    badge.className = capture.autoCaptureLatchedTab ? "mcp-bridge-badge connected" : "mcp-bridge-badge";
-  }
+  setNetworkCaptureBadge(capture);
+  refreshNetworkCaptureBadge();
+}
+
+function initNetworkCaptureSettings() {
+  const autoInput = document.getElementById("network-auto-capture-latched");
+  if (!autoInput) return;
+
+  autoInput.addEventListener("change", () => {
+    settings.networkCapture = collectNetworkCaptureFromUI();
+    refreshNetworkCaptureBadge();
+  });
 }
 
 function collectNetworkCaptureFromUI() {
@@ -40,5 +66,6 @@ export const networkCaptureSection = {
   key: "networkCapture",
   normalize: normalizeNetworkCaptureSettings,
   render: renderNetworkCaptureSettings,
-  collect: collectNetworkCaptureFromUI
+  collect: collectNetworkCaptureFromUI,
+  init: initNetworkCaptureSettings
 };

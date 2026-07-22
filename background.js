@@ -1,11 +1,30 @@
-// background.js - ScrapeFlow background service worker
-
-import { getActiveTabId, executePageTool, formatToolResultForMcp } from "./shared/browser-tools.js";
+import { getActiveTabId, executePageTool } from "./shared/browser-tools.js";
 import { executeNetworkTool, getNetworkLogSnapshot, syncNetworkAutoCapture } from "./shared/network-logs.js";
-import { normalizeMcpBridgeSettings, normalizeTempEmailSettings, DEFAULT_MCP_BRIDGE_PORT } from "./shared/settings-schema.js";
+import {
+  normalizeMcpBridgeSettings,
+  normalizeTempEmailSettings,
+  DEFAULT_MCP_BRIDGE_PORT
+} from "./shared/settings-schema.js";
+import {
+  cancelOpenAIDeviceAuthorization,
+  getOpenAIOAuthStatus,
+  getOpenAISubscriptionModels,
+  handleOpenAIResponsePort,
+  logoutOpenAI,
+  openOpenAIDevicePage,
+  pollOpenAIDeviceAuthorization,
+  startOpenAIDeviceAuthorization
+} from "./background/openai-service.js";
 
 const RECONNECT_DELAY_MS = 3000;
-const KEEPALIVE_ALARM = "scrapeflow-mcp-keepalive";
+const KEEPALIVE_ALARM = "margin-bridge-keepalive";
+
+// Keep extension secrets inaccessible to any future content script.
+if (chrome.storage.local.setAccessLevel) {
+  chrome.storage.local
+    .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
+    .catch((error) => console.warn("Could not restrict local storage access:", error));
+}
 
 let bridgeSocket = null;
 let bridgeReconnectTimer = null;
@@ -42,7 +61,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   await loadToolAccessConfig();
   await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
-  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 });
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -57,7 +76,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (changes.mcpBridge) {
     bridgeConfig = normalizeMcpBridgeSettings(changes.mcpBridge.newValue);
-    scheduleMcpBridgeConnection();
+    scheduleMcpBridgeConnection(true);
   }
   if (changes.tempEmail) {
     tempEmailConfig = normalizeTempEmailSettings(changes.tempEmail.newValue);
@@ -74,11 +93,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== KEEPALIVE_ALARM) return;
-  if (!bridgeConfig.enabled) return;
-  if (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN) {
+  if (bridgeConfig.enabled && (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN)) {
     scheduleMcpBridgeConnection();
   }
+  pollOpenAIDeviceAuthorization().catch(() => {});
 });
+
+chrome.runtime.onConnect.addListener(handleOpenAIResponsePort);
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   try {
@@ -87,7 +108,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       await chrome.storage.session.remove("latchedTab");
     }
   } catch (e) {
-    // ignore — session storage may not be available very early in lifecycle
+    // Session storage may be unavailable early in the extension lifecycle.
   }
 });
 
@@ -101,9 +122,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
       if (changeInfo.title) updated.title = changeInfo.title;
       await chrome.storage.session.set({ latchedTab: updated });
     }
-  } catch (e) {
-    // ignore
-  }
+  } catch (e) {}
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -113,7 +132,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const stored = await chrome.storage.session.get(["latchedTab"]);
         const latched = stored.latchedTab || null;
         if (latched) {
-          // Verify the tab still exists. If not, clear and report no latch.
           try {
             await chrome.tabs.get(latched.tabId);
           } catch {
@@ -212,9 +230,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (String(message?.type || "").startsWith("openai-oauth/")) {
+    (async () => {
+      try {
+        let result;
+        if (message.type === "openai-oauth/status") result = await getOpenAIOAuthStatus();
+        else if (message.type === "openai-oauth/start") result = await startOpenAIDeviceAuthorization();
+        else if (message.type === "openai-oauth/poll") result = await pollOpenAIDeviceAuthorization();
+        else if (message.type === "openai-oauth/cancel") result = await cancelOpenAIDeviceAuthorization();
+        else if (message.type === "openai-oauth/logout") result = await logoutOpenAI();
+        else if (message.type === "openai-oauth/open-device") result = await openOpenAIDevicePage();
+        else if (message.type === "openai-oauth/models") result = await getOpenAISubscriptionModels();
+        else throw new Error("Unknown OpenAI OAuth request.");
+        sendResponse({ ok: true, result });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message || String(error) });
+      }
+    })();
+    return true;
+  }
+
   if (message?.type === "network-tool" && message.name) {
     (async () => {
       try {
+        if (!isStoredToolEnabled(message.name)) {
+          sendResponse({ ok: false, result: `Tool "${message.name}" is disabled in Margin settings.` });
+          return;
+        }
         const tabId = await getActiveTabId();
         const result = await executeNetworkTool(message.name, message.arguments || {}, tabId);
         sendResponse({ ok: true, result });
@@ -253,6 +295,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "page-tool" && message.name) {
     (async () => {
       try {
+        if (!isStoredToolEnabled(message.name)) {
+          sendResponse({ ok: false, result: `Tool "${message.name}" is disabled in Margin settings.` });
+          return;
+        }
         const result = await executePageTool(message.name, message.arguments || {});
         sendResponse({ ok: true, result });
       } catch (err) {
@@ -306,6 +352,10 @@ function normalizeToolAccessConfig(raw) {
   return { enabled };
 }
 
+function isStoredToolEnabled(toolName) {
+  return toolAccessConfig.enabled?.[toolName] === true;
+}
+
 async function loadToolAccessConfig() {
   const stored = await chrome.storage.local.get(["toolAccess"]);
   toolAccessConfig = normalizeToolAccessConfig(stored.toolAccess);
@@ -335,9 +385,29 @@ function sendFeatureFlagsToBridge() {
         toolAccess: toolAccessConfig
       }
     }));
-  } catch (e) {
-    // best-effort
-  }
+  } catch (e) {}
+}
+
+function requestMcpToolFromPanel(message) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({
+      type: "mcp/tool-call",
+      name: message.name,
+      arguments: message.arguments || {},
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({
+          content: [{ type: "text", text: "Open the Margin side panel to approve and run browser tools." }],
+          isError: true,
+        });
+        return;
+      }
+      resolve(response?.result || {
+        content: [{ type: "text", text: "Margin returned no tool result." }],
+        isError: true,
+      });
+    });
+  });
 }
 
 function scheduleMcpBridgeConnection(force = false) {
@@ -368,9 +438,7 @@ function disconnectBridge() {
     bridgeSocket.onmessage = null;
     try {
       bridgeSocket.close();
-    } catch {
-      // ignore
-    }
+    } catch {}
     bridgeSocket = null;
   }
   bridgeStatus.connected = false;
@@ -398,7 +466,7 @@ function connectBridge() {
   socket.onopen = () => {
     socket.send(JSON.stringify({
       type: "register",
-      client: "scrapeflow-extension",
+      client: "margin-extension",
       version: chrome.runtime.getManifest().version,
       token: bridgeConfig.token || ""
     }));
@@ -434,9 +502,19 @@ function connectBridge() {
     }
 
     if (message.type === "tool/call" && message.id && message.name) {
+      if (!isStoredToolEnabled(message.name)) {
+        socket.send(JSON.stringify({
+          type: "tool/result",
+          id: message.id,
+          result: {
+            content: [{ type: "text", text: `Tool "${message.name}" is disabled in Margin settings.` }],
+            isError: true
+          }
+        }));
+        return;
+      }
       try {
-        const rawResult = await executePageTool(message.name, message.arguments || {});
-        const formatted = formatToolResultForMcp(rawResult);
+        const formatted = await requestMcpToolFromPanel(message);
         socket.send(JSON.stringify({
           type: "tool/result",
           id: message.id,
@@ -480,7 +558,7 @@ function queueReconnect() {
 
 loadMcpBridgeConfig().then(() => {
   scheduleMcpBridgeConnection();
-  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 });
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
 });
 
 loadTempEmailConfig();

@@ -10,7 +10,7 @@ import GitHubIcon from "@mui/icons-material/GitHub";
 import CodeIcon from "@mui/icons-material/Code";
 import GroupsIcon from "@mui/icons-material/Groups";
 import VerifiedIcon from "@mui/icons-material/Verified";
-import { DOCS_URL, GITHUB_URL } from "@/lib/constants";
+import { DOCS_URL, GITHUB_CONFIGURED, GITHUB_URL } from "@/lib/constants";
 
 const OSS_POINTS = [
   {
@@ -20,13 +20,13 @@ const OSS_POINTS = [
   },
   {
     icon: <GroupsIcon />,
-    title: "Community driven",
-    text: "Issues, PRs, and discussions on GitHub. No black-box scraping magic.",
+    title: "Community reviewable",
+    text: "A documented contribution workflow with inspectable provider and browser-tool code.",
   },
   {
     icon: <VerifiedIcon />,
-    title: "Bring your own key",
-    text: "OpenRouter API key stays in your browser. You pick models and control spend.",
+    title: "Choose your provider",
+    text: "Connect ChatGPT with a device-code OAuth flow or store an OpenRouter key. No local companion is required.",
   },
 ];
 
@@ -40,11 +40,11 @@ export default function OpenSource() {
               Open source
             </Typography>
             <Typography variant="h3" sx={{ mt: 1, mb: 2 }}>
-              Built in the open. Audited by the community.
+              Built in the open. Reviewable end to end.
             </Typography>
             <Typography color="text.secondary" sx={{ mb: 3, lineHeight: 1.7 }}>
-              ScrapeFlow is fully open source on GitHub. Inspect how browser tools run, how files are stored locally,
-              and how OpenRouter calls are made — then customize it for your workflow.
+              Margin is MIT licensed and ready for a public repository. Inspect how browser tools run, how files
+              are stored locally, and how provider requests are made — then customize it for your workflow.
             </Typography>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <Button
@@ -56,7 +56,7 @@ export default function OpenSource() {
                 size="large"
                 startIcon={<GitHubIcon />}
               >
-                View repository
+                {GITHUB_CONFIGURED ? "View repository" : "Repository URL coming with release"}
               </Button>
               <Button href={DOCS_URL} target="_blank" rel="noopener noreferrer" variant="outlined" color="inherit" size="large" sx={{ borderColor: "divider" }}>
                 Read docs
