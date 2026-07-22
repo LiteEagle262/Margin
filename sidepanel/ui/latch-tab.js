@@ -1,14 +1,6 @@
-// sidepanel/ui/latch-tab.js - Latch the agent to a specific browser tab.
-
 import { showToast } from "../lib/toast.js";
 
-// ----------------------------------------------------
-// LATCH TO TAB
-// ----------------------------------------------------
-// "Latched" means every browser tool (get_dom, click, screenshot, run_js, etc.)
-// operates on a fixed tabId instead of whatever happens to be in focus. This
-// lets the user keep working on a scraper for one page while clicking around
-// in other tabs to look things up.
+// Latching keeps browser tools on a fixed tab while the user changes focus.
 export function initLatchTab() {
   const latchBtn = document.getElementById("latch-tab-btn");
   const unlatchBtn = document.getElementById("unlatch-tab-btn");

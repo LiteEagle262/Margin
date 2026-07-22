@@ -1,6 +1,3 @@
-// Settings section: OpenRouter provider routing (order, fallbacks, sort mode)
-// with the live provider comparison table.
-
 import {
   settings,
   openRouterModels,
@@ -62,6 +59,7 @@ function collectProviderRoutingFromUI() {
 }
 
 export function buildProviderPreferences() {
+  if (settings.aiProvider !== "openrouter") return null;
   const routing = normalizeProviderRoutingSettings(settings.providerRouting);
   if (!routing.enabled || routing.mode === "auto") return null;
 
@@ -161,11 +159,16 @@ export function renderProviderRoutingSettings() {
 }
 
 async function fetchOpenRouterEndpoints() {
-  const apiKeyInput = document.getElementById("openrouter-api-key");
+  if (settings.aiProvider !== "openrouter") return [];
+  const apiKeyInput = document.getElementById("provider-api-key");
   const apiKey = apiKeyInput ? apiKeyInput.value.trim() : settings.apiKey;
   const modelId = selectedModelIdFromUI();
   const url = modelEndpointsUrl(modelId);
 
+  if (!settings.dataSharingConsent) {
+    setProviderRoutingStatus("Accept the provider-processing disclosure before connecting OpenRouter.", true);
+    return [];
+  }
   if (!apiKey) {
     setProviderRoutingStatus("Add your OpenRouter API key above to load provider endpoints.", true);
     return [];

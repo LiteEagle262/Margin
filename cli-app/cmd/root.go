@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -12,13 +11,14 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "scrapeflow-cli",
-	Short: "ScrapeFlow CLI bridge for AI terminal and file access",
-	Long: `scrapeflow-cli runs a local WebSocket bridge so the ScrapeFlow extension
-can read, write, and execute commands within a bounded workspace directory.
+	Use:   "margin-cli",
+	Short: "Experimental local bridge for bounded terminal and file access",
+	Long: `margin-cli runs an experimental local WebSocket bridge so a compatible
+client can read, write, and execute commands within a bounded workspace directory.
 
-Initialize in your project root, optionally authenticate with the token shown by the extension,
-then run serve to start the bridge.`,
+The current Margin Chrome extension does not connect to this protocol. Initialize
+in a project root, configure a compatible client with the generated token, then
+run serve to start the bridge.`,
 }
 
 func Execute() {
@@ -51,14 +51,15 @@ var initCmd = &cobra.Command{
 		}
 		fmt.Printf("Initialized workspace at %s\n", cfg.WorkspaceRoot)
 		fmt.Printf("Config saved to %s/%s\n", config.DirName, config.FileName)
-		fmt.Println("Next: run `scrapeflow-cli serve --mode workspace` or `scrapeflow-cli serve --mode codex`")
+		fmt.Printf("Configure a compatible client with auth_token from %s/%s.\n", config.DirName, config.FileName)
+		fmt.Println("Next: run `margin-cli serve`")
 		return nil
 	},
 }
 
 var authCmd = &cobra.Command{
 	Use:   "auth <token>",
-	Short: "Set the auth token shown in the ScrapeFlow extension",
+	Short: "Set an auth token of at least 32 bytes",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := config.SetAuthToken(args[0]); err != nil {
@@ -71,20 +72,11 @@ var authCmd = &cobra.Command{
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start the WebSocket bridge for extension communication",
+	Short: "Start the experimental WebSocket bridge",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
 			return err
-		}
-		if mode, _ := cmd.Flags().GetString("mode"); mode != "" {
-			if mode != "workspace" && mode != "codex" {
-				return errors.New("mode must be `workspace` or `codex`")
-			}
-			cfg.Mode = mode
-		}
-		if model, _ := cmd.Flags().GetString("model"); model != "" {
-			cfg.CodexModel = model
 		}
 		bridge, err := server.New(cfg)
 		if err != nil {
@@ -92,11 +84,6 @@ var serveCmd = &cobra.Command{
 		}
 		return bridge.ListenAndServe()
 	},
-}
-
-func init() {
-	serveCmd.Flags().String("mode", "", "Bridge mode: workspace or codex")
-	serveCmd.Flags().String("model", "", "Optional Codex model override")
 }
 
 var statusCmd = &cobra.Command{
@@ -109,19 +96,14 @@ var statusCmd = &cobra.Command{
 		}
 		fmt.Printf("Workspace:  %s\n", cfg.WorkspaceRoot)
 		fmt.Printf("Bridge:     ws://%s:%d\n", cfg.Host, cfg.Port)
-		fmt.Printf("Mode:       %s\n", cfg.Mode)
-		if cfg.AuthToken != "" {
-			fmt.Println("Auth:       token configured")
-		} else {
-			fmt.Println("Auth:       no token (localhost connections accepted)")
-		}
+		fmt.Println("Auth:       token configured")
 		return nil
 	},
 }
 
 var toolsCmd = &cobra.Command{
 	Use:   "tools",
-	Short: "List available bridge tools (for extension integration)",
+	Short: "List tools available to compatible bridge clients",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		for _, tool := range server.Tools() {
 			fmt.Printf("- %s\n", tool["name"])

@@ -1,7 +1,3 @@
-// sidepanel/tools/schemas.js - Tool schemas declared to OpenRouter.
-// Pure data: no imports, no logic.
-
-// Tool schemas declared to OpenRouter
 export const BROWSER_TOOLS = [
   {
     type: "function",
@@ -504,9 +500,7 @@ export const WEB_SEARCH_TOOLS = [
   }
 ];
 
-// Recon / API-inspection tools: replay requests, inspect credentials/state,
-// and search loaded scripts. These can expose session secrets, so they live in
-// their own access group and are treated as risky by default.
+// Recon tools can expose session secrets and remain a separate, opt-in access group.
 export const RECON_TOOLS = [
   {
     type: "function",

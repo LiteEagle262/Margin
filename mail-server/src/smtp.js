@@ -6,7 +6,7 @@ export function createSmtpServer({ port, host, domain, maxSizeBytes, log }) {
     authOptional: true,
     disabledCommands: ["AUTH", "STARTTLS"],
     size: maxSizeBytes,
-    banner: "ScrapeFlow mail receiver",
+    banner: "Margin mail receiver",
 
     onRcptTo(address, _session, cb) {
       const recipient = String(address.address || "").toLowerCase();

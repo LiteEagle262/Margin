@@ -1,5 +1,3 @@
-// sidepanel/features/network-logs.js - Human-facing network log viewer/export.
-
 import { downloadTextFile } from "../lib/download.js";
 import { showToast } from "../lib/toast.js";
 
@@ -186,13 +184,13 @@ async function downloadCurrentNetworkLogs() {
   try {
     const snapshot = await sendNetworkSnapshotRequest(true);
     const exported = {
-      exportType: "scrapeflow-network-logs",
+      exportType: "margin-network-logs",
       exportedAt: new Date().toISOString(),
       ...snapshot
     };
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     downloadTextFile(
-      `scrapeflow-network-logs-${stamp}.json`,
+      `margin-network-logs-${stamp}.json`,
       JSON.stringify(exported, null, 2),
       "application/json;charset=utf-8"
     );

@@ -9,7 +9,12 @@ import Typography from "@mui/material/Typography";
 import GitHubIcon from "@mui/icons-material/GitHub";
 import ExtensionIcon from "@mui/icons-material/Extension";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
-import { CHROME_STORE_URL, GITHUB_URL } from "@/lib/constants";
+import {
+  CHROME_STORE_CONFIGURED,
+  CHROME_STORE_URL,
+  GITHUB_CONFIGURED,
+  GITHUB_URL,
+} from "@/lib/constants";
 
 export default function Hero() {
   return (
@@ -37,7 +42,7 @@ export default function Hero() {
           <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", justifyContent: "center" }}>
             <Chip
               icon={<GitHubIcon />}
-              label="Open source on GitHub"
+              label={GITHUB_CONFIGURED ? "Open source on GitHub" : "Open-source release ready"}
               size="small"
               component="a"
               href={GITHUB_URL}
@@ -48,7 +53,7 @@ export default function Hero() {
             />
             <Chip
               icon={<AutoAwesomeIcon />}
-              label="OpenRouter · MCP · Browser tools"
+              label="OpenAI · OpenRouter · Browser tools"
               size="small"
               sx={{ bgcolor: "background.paper", border: 1, borderColor: "divider" }}
             />
@@ -69,8 +74,8 @@ export default function Hero() {
           </Typography>
 
           <Typography variant="h6" color="text.secondary" sx={{ maxWidth: 620, fontWeight: 400, lineHeight: 1.6 }}>
-            ScrapeFlow is a Chrome side-panel assistant that inspects live pages, runs browser tools, and ships
-            scripts as clean file cards — powered by any OpenRouter model you choose.
+            Margin is a Chrome side-panel assistant that inspects live pages, runs browser tools, and ships
+            scripts as clean file cards — powered by a linked ChatGPT account or an OpenRouter API key.
           </Typography>
 
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
@@ -81,7 +86,7 @@ export default function Hero() {
               size="large"
               startIcon={<ExtensionIcon />}
             >
-              Add to Chrome
+              {CHROME_STORE_CONFIGURED ? "Add to Chrome" : "View release details"}
             </Button>
             <Button
               href={GITHUB_URL}
@@ -93,7 +98,7 @@ export default function Hero() {
               startIcon={<GitHubIcon />}
               sx={{ borderColor: "divider" }}
             >
-              Star on GitHub
+              {GITHUB_CONFIGURED ? "Star on GitHub" : "View open-source details"}
             </Button>
           </Stack>
 
@@ -110,12 +115,12 @@ export default function Hero() {
               boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
             }}
           >
-            <Stack spacing={1.5} sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 13, textAlign: "left" }}>
-              <Box sx={{ color: "text.secondary" }}>// Side panel · Agent loop</Box>
+            <Stack spacing={1.5} sx={{ fontFamily: 'ui-monospace, "SFMono-Regular", Menlo, monospace', fontSize: 13, textAlign: "left" }}>
+              <Box sx={{ color: "text.secondary" }}>{"// Side panel · Agent loop"}</Box>
               <Box>
                 <Box component="span" sx={{ color: "primary.main" }}>assistant</Box>
                 <Box component="span" sx={{ color: "text.secondary" }}> → write_file(</Box>
-                <Box component="span" sx={{ color: "#fbbf24" }}>"scraper.js"</Box>
+                <Box component="span" sx={{ color: "#fbbf24" }}>{'"scraper.js"'}</Box>
                 <Box component="span" sx={{ color: "text.secondary" }}>)</Box>
               </Box>
               <Box

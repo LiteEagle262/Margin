@@ -33,16 +33,16 @@ export default function Pricing() {
             Pricing
           </Typography>
           <Typography variant="h3" sx={{ mt: 1, mb: 1.5 }}>
-            Start free. Scale when you need more.
+            Open source. Bring your own provider.
           </Typography>
           <Typography color="text.secondary" sx={{ maxWidth: 520, mx: "auto" }}>
-            The extension is open source forever. Pro and Team add managed sync, support, and collaboration.
+            Margin is free under the MIT license. Any ChatGPT subscription or OpenRouter usage charges are handled by your selected provider.
           </Typography>
         </Box>
 
-        <Grid container spacing={3} sx={{ alignItems: "stretch" }}>
+        <Grid container spacing={3} sx={{ alignItems: "stretch", justifyContent: "center" }}>
           {PLANS.map((plan) => (
-            <Grid key={plan.id} size={{ xs: 12, md: 4 }}>
+            <Grid key={plan.id} size={{ xs: 12, md: 6 }}>
               <Card
                 sx={{
                   height: "100%",

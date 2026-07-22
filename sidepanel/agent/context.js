@@ -1,14 +1,10 @@
-// sidepanel/agent/context.js - Model context assembly: system prompt,
-// token budgeting, attachment blocks, and packing stored chat history into
-// API messages.
-
 import { settings, chats, currentChatId, openRouterModels } from "../state/store.js";
 import { approxTokens, formatTokens } from "../lib/format.js";
 import { isWebSearchAvailable } from "../../shared/tavily.js";
 import { getAllAgentTools } from "../tools/execute.js";
 import { getFallbackContextWindow } from "../settings/sections/agent-limits.js";
 
-export const DEFAULT_SYSTEM_PROMPT = `You are ScrapeFlow, a professional browser-automation and web scraping AI assistant.
+export const DEFAULT_SYSTEM_PROMPT = `You are Margin, a professional browser-automation and web scraping AI assistant.
 You can execute actions on the current webpage using your built-in tools. For browser interaction, prefer take_snapshot first, then use uid-based click_element, fill_element, fill_form, hover_element, press_key, and wait_for. Use get_dom for raw scraping/debugging when the compact snapshot is insufficient.
 If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.
 For debugging API calls and page requests, use get_network_logs first because a settings-enabled hindsight buffer may already exist for the latched tab. If no logs are available, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, failures, and redacted bodies.
@@ -49,9 +45,6 @@ export function getActiveModelInfo() {
   const id = settings.model;
   const match = openRouterModels.find(m => m.id === id);
   const realContext = Number(match?.context_length);
-  // We only "know" the window when the model record is loaded AND advertises a
-  // usable context_length. Otherwise we surface the configurable fallback and
-  // flag it so the UI can show "unknown" instead of a misleading number.
   const contextKnown = Number.isFinite(realContext) && realContext > 0;
   return {
     id,
@@ -92,7 +85,8 @@ export function getAttachmentKind(fileOrAttachment) {
 
 export function getReadableAttachmentSupport() {
   const modalities = getActiveModelInputModalities();
-  const modelKnown = !!getActiveModelRecord();
+  const activeRecord = getActiveModelRecord();
+  const modelKnown = !!activeRecord && activeRecord.capabilitiesKnown !== false;
   return {
     modelKnown,
     modalities,
@@ -108,6 +102,10 @@ export function validateAttachmentForActiveModel(file) {
   const support = getReadableAttachmentSupport();
   const kind = getAttachmentKind(file);
 
+  if (settings.aiProvider === "openai" && !["text", "image"].includes(kind)) {
+    return `${file.name} cannot be sent in OpenAI subscription mode. Use a text file or image.`;
+  }
+
   if ((kind === "image" || kind === "pdf" || kind === "audio" || kind === "video" || kind === "binary") &&
       file.size > BINARY_ATTACHMENT_MAX_BYTES) {
     return `${file.name} is too large. Keep binary attachments under ${Math.round(BINARY_ATTACHMENT_MAX_BYTES / 1024 / 1024)} MB.`;
@@ -116,16 +114,16 @@ export function validateAttachmentForActiveModel(file) {
     return `${file.name} is too large to inline. Keep text attachments under ${Math.round(TEXT_ATTACHMENT_MAX_BYTES / 1024)} KB.`;
   }
   if (kind === "image" && !support.supportsImage) {
-    return `${settings.model} does not advertise image input on OpenRouter.`;
+    return `${settings.model} does not advertise image input through the selected provider.`;
   }
   if (kind === "audio" && !support.supportsAudio) {
-    return `${settings.model} does not advertise audio input on OpenRouter.`;
+    return `${settings.model} does not advertise audio input through the selected provider.`;
   }
   if (kind === "video" && !support.supportsVideo) {
-    return `${settings.model} does not advertise video input on OpenRouter.`;
+    return `${settings.model} does not advertise video input through the selected provider.`;
   }
   if (kind === "binary" && !support.supportsFile) {
-    return `${settings.model} does not advertise generic file input on OpenRouter.`;
+    return `${settings.model} does not advertise generic file input through the selected provider.`;
   }
   return "";
 }
@@ -162,6 +160,8 @@ export function countApiMessageTokens(message) {
     });
   }
   if (Array.isArray(message.tool_calls)) total += approxTokens(message.tool_calls);
+  if (Array.isArray(message.openai_response_items)) total += approxTokens(message.openai_response_items);
+  if (Array.isArray(message.reasoning_details)) total += approxTokens(message.reasoning_details);
   if (message.tool_call_id) total += approxTokens(message.tool_call_id);
   if (message.name) total += approxTokens(message.name);
   return total;
@@ -220,7 +220,7 @@ function buildAttachmentPartsForModel(msg) {
     if (kind === "audio" && attachment.base64) {
       parts.push({
         type: "input_audio",
-        inputAudio: {
+        input_audio: {
           data: attachment.base64,
           format: getAudioAttachmentFormat(attachment)
         }
@@ -304,7 +304,7 @@ function formatToolContentForModel(msg, inlineToolCallIds) {
   ].join("\n");
 }
 
-function formatStoredMessageForModel(msg, inlineToolCallIds) {
+function formatStoredMessageForModel(msg, inlineToolCallIds, includeOpenAIContinuation, includeOpenRouterReasoning) {
   if (msg.role === "user") {
     const attachmentParts = buildAttachmentPartsForModel(msg);
     const contents = [];
@@ -317,14 +317,18 @@ function formatStoredMessageForModel(msg, inlineToolCallIds) {
   }
 
   if (msg.role === "assistant") {
-    if (msg.tool_calls) {
-      return {
-        role: "assistant",
-        content: msg.content || null,
-        tool_calls: msg.tool_calls
-      };
-    }
-    return { role: "assistant", content: msg.content || "" };
+    const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    return {
+      role: "assistant",
+      content: toolCalls.length ? msg.content || null : msg.content || "",
+      ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+      ...(includeOpenAIContinuation && Array.isArray(msg.openai_response_items)
+        ? { openai_response_items: msg.openai_response_items }
+        : {}),
+      ...(includeOpenRouterReasoning && Array.isArray(msg.reasoning_details)
+        ? { reasoning_details: msg.reasoning_details }
+        : {})
+    };
   }
 
   if (msg.role === "tool") {
@@ -339,7 +343,7 @@ function formatStoredMessageForModel(msg, inlineToolCallIds) {
   return null;
 }
 
-function buildModelMessageBlocks(activeChat) {
+function buildModelMessageBlocks(activeChat, includeOpenAIContinuation, includeOpenRouterReasoning) {
   if (!activeChat || !Array.isArray(activeChat.messages)) return [];
   const inlineToolCallIds = getRecentInlineToolCallIds(activeChat.messages);
   const blocks = [];
@@ -347,9 +351,12 @@ function buildModelMessageBlocks(activeChat) {
   for (let i = 0; i < activeChat.messages.length; i++) {
     const msg = activeChat.messages[i];
     if (!msg || msg.role === "tool-status" || msg.role === "file-artifact" || msg.role === "reasoning") continue;
+    if (msg.role === "assistant" && (msg.isError === true || String(msg.content || "").startsWith("Error occurred during agent turn:"))) continue;
 
     if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-      const blockMessages = [formatStoredMessageForModel(msg, inlineToolCallIds)];
+      const blockMessages = [
+        formatStoredMessageForModel(msg, inlineToolCallIds, includeOpenAIContinuation, includeOpenRouterReasoning),
+      ];
       const expectedToolIds = new Set(msg.tool_calls.map(tc => tc.id).filter(Boolean));
       let j = i + 1;
       while (j < activeChat.messages.length) {
@@ -359,7 +366,9 @@ function buildModelMessageBlocks(activeChat) {
           continue;
         }
         if (next?.role === "tool" && expectedToolIds.has(next.tool_call_id)) {
-          blockMessages.push(formatStoredMessageForModel(next, inlineToolCallIds));
+          blockMessages.push(
+            formatStoredMessageForModel(next, inlineToolCallIds, includeOpenAIContinuation, includeOpenRouterReasoning),
+          );
           j++;
           continue;
         }
@@ -372,7 +381,12 @@ function buildModelMessageBlocks(activeChat) {
 
     if (msg.role === "tool") continue;
 
-    const formatted = formatStoredMessageForModel(msg, inlineToolCallIds);
+    const formatted = formatStoredMessageForModel(
+      msg,
+      inlineToolCallIds,
+      includeOpenAIContinuation,
+      includeOpenRouterReasoning,
+    );
     if (formatted) blocks.push({ messages: [formatted] });
   }
 
@@ -382,7 +396,11 @@ function buildModelMessageBlocks(activeChat) {
 export function buildApiMessagesForChat(activeChat) {
   const systemMessage = { role: "system", content: getEffectiveSystemPrompt() };
   const budget = getModelMessageBudget();
-  const blocks = buildModelMessageBlocks(activeChat);
+  const blocks = buildModelMessageBlocks(
+    activeChat,
+    settings.aiProvider === "openai",
+    settings.aiProvider === "openrouter",
+  );
   const selected = [];
   let used = 0;
   let omitted = 0;

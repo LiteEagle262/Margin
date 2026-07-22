@@ -1,5 +1,3 @@
-// sidepanel/ui/icons.js - Inline SVG icon snippets.
-
 export const EYE_ICON = `
   <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
     <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>

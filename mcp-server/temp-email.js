@@ -1,15 +1,14 @@
-// Tools that proxy to the ScrapeFlow mail-server backend so an AI agent can
-// generate disposable inboxes and read incoming verification emails.
-
 const DEFAULT_TIMEOUT_MS = 60000;
 
-// Runtime state. Defaults to env vars; the extension's WebSocket message
-// `feature-flags/set` overrides these at runtime. `enabled` gates whether the
-// tools appear in the MCP tool list at all; without it, the tools are hidden.
+function readEnv(name) {
+  return process.env[name] ?? "";
+}
+
+// Extension feature flags override environment defaults and gate tool visibility.
 const state = {
   enabled: false,
-  baseUrl: (process.env.SCRAPEFLOW_MAIL_API_URL || "").replace(/\/+$/, ""),
-  apiKey: process.env.SCRAPEFLOW_MAIL_API_KEY || ""
+  baseUrl: readEnv("MARGIN_MAIL_API_URL").replace(/\/+$/, ""),
+  apiKey: readEnv("MARGIN_MAIL_API_KEY")
 };
 
 export function setTempEmailFlags({ enabled, apiUrl, apiKey } = {}) {
@@ -37,7 +36,7 @@ async function call(method, path, { body, query, timeoutMs = DEFAULT_TIMEOUT_MS 
   const { baseUrl, apiKey } = getConfig();
   if (!baseUrl || !apiKey) {
     throw new Error(
-      "Temp email backend not configured. Set SCRAPEFLOW_MAIL_API_URL and SCRAPEFLOW_MAIL_API_KEY in the MCP server env."
+      "Temp email backend not configured. Set MARGIN_MAIL_API_URL and MARGIN_MAIL_API_KEY in the MCP server env."
     );
   }
 
@@ -85,7 +84,7 @@ export const TEMP_EMAIL_TOOLS = [
   {
     name: "create_temp_email",
     description:
-      "Create a disposable email inbox on the ScrapeFlow mail backend. Returns an inbox id and an email address (e.g. r3kf91md@yourdomain.com) that you can paste into signup forms. The inbox receives mail until it expires.",
+      "Create a disposable email inbox on the Margin mail backend. Returns an inbox id and an email address (e.g. r3kf91md@yourdomain.com) that you can paste into signup forms. The inbox receives mail until it expires.",
     inputSchema: {
       type: "object",
       properties: {
@@ -155,12 +154,12 @@ export const TEMP_EMAIL_TOOL_NAMES = new Set(TEMP_EMAIL_TOOLS.map((t) => t.name)
 export async function callTempEmailTool(name, args = {}) {
   if (!isTempEmailEnabled()) {
     return errorResult(
-      "Temp email tools are disabled. Enable them in the ScrapeFlow extension settings (Temp Email Backend section)."
+      "Temp email tools are disabled. Enable them in the Margin extension settings (Temp Email Backend section)."
     );
   }
   if (!isConfigured()) {
     return errorResult(
-      "Temp email backend not configured. Enter the mail server URL and API key in the ScrapeFlow extension settings, or set SCRAPEFLOW_MAIL_API_URL and SCRAPEFLOW_MAIL_API_KEY env vars on the MCP server."
+      "Temp email backend not configured. Enter the mail server URL and API key in the Margin extension settings, or set MARGIN_MAIL_API_URL and MARGIN_MAIL_API_KEY env vars on the MCP server."
     );
   }
 

@@ -7,7 +7,14 @@ import Link from "@mui/material/Link";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import GitHubIcon from "@mui/icons-material/GitHub";
-import { CHROME_STORE_URL, GITHUB_URL, NAV_LINKS } from "@/lib/constants";
+import {
+  CHROME_STORE_CONFIGURED,
+  CHROME_STORE_URL,
+  GITHUB_CONFIGURED,
+  GITHUB_URL,
+  NAV_LINKS,
+  PRIVACY_URL,
+} from "@/lib/constants";
 
 export default function Footer() {
   return (
@@ -20,7 +27,7 @@ export default function Footer() {
         >
           <Box>
             <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: "-0.03em" }}>
-              ScrapeFlow
+              Margin
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
               AI-powered scraping in your browser side panel.
@@ -33,11 +40,16 @@ export default function Footer() {
                 {link.label}
               </Link>
             ))}
-            <Link href={GITHUB_URL} target="_blank" rel="noopener noreferrer" color="text.secondary" underline="hover" variant="body2">
-              GitHub
-            </Link>
+            {GITHUB_CONFIGURED && (
+              <Link href={GITHUB_URL} target="_blank" rel="noopener noreferrer" color="text.secondary" underline="hover" variant="body2">
+                GitHub
+              </Link>
+            )}
             <Link href={CHROME_STORE_URL} color="text.secondary" underline="hover" variant="body2">
-              Chrome Web Store
+              {CHROME_STORE_CONFIGURED ? "Chrome Web Store" : "Release details"}
+            </Link>
+            <Link href={PRIVACY_URL} color="text.secondary" underline="hover" variant="body2">
+              Privacy
             </Link>
           </Stack>
         </Stack>
@@ -46,20 +58,22 @@ export default function Footer() {
 
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ justifyContent: "space-between" }}>
           <Typography variant="caption" color="text.secondary">
-            © {new Date().getFullYear()} ScrapeFlow. Open source under MIT.
+            © {new Date().getFullYear()} Margin. Open source under MIT.
           </Typography>
-          <Link
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            color="text.secondary"
-            underline="hover"
-            variant="caption"
-            sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}
-          >
-            <GitHubIcon sx={{ fontSize: 14 }} />
-            github.com/scrapeflow/scrapeflow
-          </Link>
+          {GITHUB_CONFIGURED && (
+            <Link
+              href={GITHUB_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              color="text.secondary"
+              underline="hover"
+              variant="caption"
+              sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}
+            >
+              <GitHubIcon sx={{ fontSize: 14 }} />
+              Source repository
+            </Link>
+          )}
         </Stack>
       </Container>
     </Box>

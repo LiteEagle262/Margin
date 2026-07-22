@@ -3,12 +3,12 @@
 import { AppRouterCacheProvider } from "@mui/material-nextjs/v16-appRouter";
 import { ThemeProvider } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
-import { scrapeflowTheme } from "@/theme/theme";
+import { marginTheme } from "@/theme/theme";
 
 export default function ThemeRegistry({ children }: { children: React.ReactNode }) {
   return (
     <AppRouterCacheProvider>
-      <ThemeProvider theme={scrapeflowTheme}>
+      <ThemeProvider theme={marginTheme}>
         <CssBaseline />
         {children}
       </ThemeProvider>

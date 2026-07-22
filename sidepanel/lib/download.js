@@ -1,5 +1,3 @@
-// sidepanel/lib/download.js - Trigger a browser download of generated text.
-
 export function downloadTextFile(filename, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);

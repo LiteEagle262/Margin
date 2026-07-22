@@ -1,0 +1,17 @@
+{
+  "name": "margin-extension",
+  "version": "1.4.3",
+  "private": true,
+  "type": "module",
+  "description": "Open-source AI browser agent for Chrome's side panel",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node scripts/validate-release.mjs && node scripts/check-syntax.mjs",
+    "test": "npm run check && node --test tests/*.test.mjs",
+    "package:extension": "npm test && node scripts/package-extension.mjs",
+    "qa:visual": "node tests/visual-server.mjs"
+  }
+}

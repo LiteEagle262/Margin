@@ -1,10 +1,9 @@
-// sidepanel/state/persistence.js - chrome.storage I/O for app state.
-// Normalization of stored settings stays with the settings code; this module
-// only reads and writes.
-
 import { chats, currentChatId, globalWorkspace, setGlobalWorkspace } from "./store.js";
 
 export const SETTINGS_STORAGE_KEYS = [
+  "aiProvider",
+  "providerConfigs",
+  "dataSharingConsent",
   "apiKey",
   "model",
   "customModel",

@@ -1,15 +1,11 @@
-// sidepanel/ui/history-drawer.js - Left drawer listing chat sessions.
-
-import { chats, currentChatId, setCurrentChatId } from "../state/store.js";
+import { chats, currentChatId, isAgentRunning, setCurrentChatId } from "../state/store.js";
 import { saveChats } from "../state/persistence.js";
 import { EDIT_ICON, SPARKLES_ICON } from "./icons.js";
 import { renderChatHistory } from "./chat-view.js";
 import { createNewChatSession } from "../features/chats.js";
 import { renameChatManually, generateChatTitle } from "../features/chat-titles.js";
+import { showToast } from "../lib/toast.js";
 
-// ----------------------------------------------------
-// UI NAVIGATION & LAYOUT
-// ----------------------------------------------------
 export function initHistoryDrawer() {
   const hamburgerBtn = document.getElementById("hamburger-menu-btn");
   const backdrop = document.getElementById("drawer-backdrop");
@@ -33,6 +29,10 @@ export function initHistoryDrawer() {
 
     if (newChatBtn) {
       newChatBtn.addEventListener("click", () => {
+        if (isAgentRunning) {
+          showToast("Stop the current response before starting another chat");
+          return;
+        }
         createNewChatSession();
         closeDrawer();
       });
@@ -50,31 +50,31 @@ function getChatSortTime(chat) {
   return 0;
 }
 
-// Render the list of chat sessions inside left drawer
 export function renderHistoryList() {
   const historyList = document.getElementById("history-list");
   if (!historyList) return;
 
   historyList.innerHTML = "";
 
-  // Sort by newest conversation activity first; renaming does not change this order.
   const sortedSessions = Object.values(chats).sort((a, b) => getChatSortTime(b) - getChatSortTime(a));
 
   sortedSessions.forEach(session => {
     const item = document.createElement("div");
     item.className = `history-item ${session.id === currentChatId ? "active" : ""}`;
     
-    // Title text block
     const textSpan = document.createElement("span");
     textSpan.className = "history-item-title";
     textSpan.textContent = session.title || "New Chat";
     textSpan.addEventListener("click", () => {
+      if (isAgentRunning && session.id !== currentChatId) {
+        showToast("Stop the current response before switching chats");
+        return;
+      }
       setCurrentChatId(session.id);
       saveChats();
       renderChatHistory();
       renderHistoryList();
       
-      // Close drawer
       const backdrop = document.getElementById("drawer-backdrop");
       const drawer = document.getElementById("history-drawer");
       if (drawer && backdrop) {
@@ -110,7 +110,6 @@ export function renderHistoryList() {
     });
     actions.appendChild(aiRenameBtn);
 
-    // Delete Button
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "history-item-action history-item-delete";
     deleteBtn.title = "Delete Chat";
@@ -130,8 +129,11 @@ export function renderHistoryList() {
   });
 }
 
-// Delete Chat session
 function deleteChatSession(id) {
+  if (isAgentRunning) {
+    showToast("Stop the current response before deleting a chat");
+    return;
+  }
   if (confirm("Are you sure you want to delete this chat session?")) {
     delete chats[id];
     if (currentChatId === id) {

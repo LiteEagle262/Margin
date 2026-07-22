@@ -1,23 +1,11 @@
-// sidepanel/ui/workspace-strip.js - Chat-scoped file chip strip above the
-// composer, plus the full-screen file viewer overlay.
-
 import { escapeHtml } from "../lib/format.js";
 import { getWorkspaceFile, getActiveChatFiles } from "../features/workspace.js";
 
-// ----------------------------------------------------
-// WORKSPACE STRIP & FILE VIEWER
-// ----------------------------------------------------
-// The strip above the input is the chat-scoped file index: it shows only the
-// files that belong to the currently open chat (extensions, userscripts,
-// scrapers, configs — whatever the agent produced in this conversation).
-// Re-renders on every workspace mutation and on chat switch.
 export function renderWorkspaceStrip() {
   const strip = document.getElementById("workspace-strip");
   const chipsEl = document.getElementById("workspace-strip-chips");
   if (!strip || !chipsEl) return;
 
-  // Always visible — even an empty chat shows the strip with a hint, so the
-  // user learns where files will appear once the agent saves them.
   strip.classList.remove("hidden");
 
   const files = Object.values(getActiveChatFiles())
@@ -89,7 +77,6 @@ export function openFileViewer(path) {
 
   overlay.classList.remove("hidden");
   overlay.setAttribute("aria-hidden", "false");
-  // Defer focus so the transition can play.
   requestAnimationFrame(() => overlay.classList.add("open"));
 
   copyBtn.onclick = (e) => {
@@ -106,7 +93,6 @@ function closeFileViewer() {
   if (!overlay || overlay.classList.contains("hidden")) return;
   overlay.classList.remove("open");
   overlay.setAttribute("aria-hidden", "true");
-  // Wait for fade transition before hiding so visual feels intentional.
   setTimeout(() => overlay.classList.add("hidden"), 160);
 }
 
