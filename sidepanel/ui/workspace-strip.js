@@ -46,13 +46,13 @@ export function renderWorkspaceStrip() {
 
     const name = file.path.split("/").pop() || file.path;
     const lines = file.content.split("\n").length;
+    const ext = name.includes(".") ? name.split(".").pop().slice(0, 4).toLowerCase() : "txt";
 
     chip.innerHTML = `
-      <span class="chip-dot" aria-hidden="true"></span>
+      <span class="chip-ext" aria-hidden="true">${escapeHtml(ext)}</span>
       <span class="chip-name">${escapeHtml(name)}</span>
-      <span class="chip-meta">${lines}L</span>
     `;
-    chip.title = `${file.path}${file.description ? `\n${file.description}` : ""}`;
+    chip.title = `${file.path} · ${lines} lines${file.description ? `\n${file.description}` : ""}`;
     chip.addEventListener("click", () => openFileViewer(file.path));
     chipsEl.appendChild(chip);
   });

@@ -146,8 +146,6 @@ export function renderActiveProviderFields() {
   const apiKeyInput = document.getElementById("provider-api-key");
   const openRouterHelp = document.getElementById("openrouter-key-help");
   const routingSection = document.getElementById("provider-routing-section");
-  const reasoningThinkingRow = document.getElementById("reasoning-thinking-row");
-  const reasoningHelp = document.getElementById("reasoning-thinking-help");
 
   if (apiKeyLabel) apiKeyLabel.textContent = provider.keyLabel;
   if (apiKeyInput) {
@@ -157,8 +155,6 @@ export function renderActiveProviderFields() {
   openRouterPanel?.classList.toggle("hidden", settings.aiProvider !== "openrouter");
   openRouterHelp?.classList.toggle("hidden", settings.aiProvider !== "openrouter");
   routingSection?.classList.toggle("hidden", settings.aiProvider !== "openrouter");
-  reasoningThinkingRow?.classList.toggle("hidden", settings.aiProvider !== "openrouter");
-  reasoningHelp?.classList.toggle("hidden", settings.aiProvider !== "openrouter");
 
   const modelSearch = document.getElementById("model-search");
   if (modelSearch) modelSearch.placeholder = `Search ${provider.label} models...`;

@@ -17,7 +17,8 @@ export const SETTINGS_STORAGE_KEYS = [
   "providerRouting",
   "reasoning",
   "agentLimits",
-  "authManualKeys"
+  "authManualKeys",
+  "appearance"
 ];
 
 export async function readStoredSettings() {
