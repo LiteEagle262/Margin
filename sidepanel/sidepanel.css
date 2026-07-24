@@ -26,7 +26,7 @@
   /* accent — customizable via Settings → Appearance (default crimson) */
   --accent: hsl(348 58% 50%);
   --accent-bright: hsl(348 58% 64%);
-  --accent-dim: hsl(348 58% 50% / 0.14);
+  --accent-dim: hsl(348 58% 50% / 0.12);
   --accent-border: hsl(348 58% 50% / 0.35);
   --on-accent: #0e0e10;
 
@@ -185,8 +185,10 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 28px;
-  padding: 6px 13px;
+  /* fixed row height: real buttons inside would otherwise push this past the
+     lab's 30px (border-box, so the 1px bottom border is included) */
+  height: 30px;
+  padding: 0 13px;
   border-bottom: 1px solid var(--border);
   font-size: 10.5px;
   color: var(--text-muted);
@@ -309,7 +311,8 @@ button {
   align-items: center;
   gap: 8px;
   min-height: 26px;
-  padding: 7px 13px;
+  /* 6px + 20px action buttons + 6px + 1px border = 33px */
+  padding: 6px 13px;
   background: var(--accent-dim);
   border-bottom: 1px solid var(--border);
   font-size: 10.5px;
@@ -1223,22 +1226,23 @@ button {
   min-width: 0;
 }
 
+/* compact metadata token, not a pill — the filename stays dominant */
 .file-action-tag {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
+  padding: 0;
+  border-radius: 0;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--on-accent);
-  background: var(--accent);
+  color: var(--accent-bright);
+  background: transparent;
 }
 
 .file-action-tag.updated {
-  background: var(--warning);
-  color: var(--bg);
+  background: transparent;
+  color: var(--warning);
 }
 
 .file-actions {
@@ -1248,21 +1252,25 @@ button {
   gap: 7px;
 }
 
+/* secondary by default, accent on hover — keeps the filename dominant */
 .copy-file-btn {
   min-height: 22px;
   padding: 0 8px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--accent-bright);
+  color: var(--text-muted);
   font-size: 10px;
   letter-spacing: 1px;
   text-transform: uppercase;
   cursor: pointer;
   margin-right: 10px;
+  transition: color 120ms ease, background 120ms ease;
 }
 
-.copy-file-btn:hover {
+.copy-file-btn:hover,
+.copy-file-btn:focus-visible {
+  color: var(--accent-bright);
   background: var(--accent-dim);
 }
 
@@ -1448,6 +1456,9 @@ button {
   gap: 7px;
   color: var(--text-muted);
   font-size: 10px;
+  /* explicit so the heading line stays 11px instead of the 16px it would
+     inherit from the 1.6 body line-height */
+  line-height: 11px;
   font-weight: 400;
   text-transform: uppercase;
   letter-spacing: 1.2px;
@@ -1526,6 +1537,8 @@ button {
   background: var(--bg);
   color: var(--text-soft);
   font-size: 10.5px;
+  /* 12px text + 8px padding + 2px border = 22px chip */
+  line-height: 12px;
   font-family: var(--mono);
   cursor: pointer;
   white-space: nowrap;
@@ -1690,6 +1703,8 @@ button {
 
 .context-ring {
   flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
   transform: rotate(-90deg);
 }
 
@@ -1730,20 +1745,16 @@ button {
   flex: 0 0 auto;
 }
 
+/* plain readout, not a pill — no padding, radius or hover block */
 .cost-meter {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 5px;
-  border-radius: var(--radius-sm);
+  padding: 0;
+  line-height: 11px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   cursor: default;
-  transition: background 120ms ease;
-}
-
-.cost-meter:hover {
-  background: var(--surface-raised);
 }
 
 .cost-icon {
@@ -3122,7 +3133,7 @@ button {
 
 .appearance-panel {
   width: 100%;
-  max-width: 340px;
+  max-width: 320px;
   max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
@@ -3154,8 +3165,8 @@ button {
 .appearance-body {
   display: flex;
   flex-direction: column;
-  gap: 15px;
-  padding: 14px;
+  gap: 18px;
+  padding: 18px;
   overflow-y: auto;
 }
 
@@ -3168,7 +3179,7 @@ button {
 .appearance-ctl-label {
   display: flex;
   justify-content: space-between;
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--text-muted);
   letter-spacing: 0.6px;
   text-transform: uppercase;
@@ -3245,8 +3256,9 @@ button {
 }
 
 .appearance-preset-swatch {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
   border-radius: 50%;
   border: 2px solid var(--border-strong);
 }

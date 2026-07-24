@@ -46,7 +46,7 @@ function hslToHex(h, s, l) {
 export function applyAppearanceTheme(appearance) {
   const { hue, saturation, lightness } = normalizeAppearanceSettings(appearance);
   const root = document.documentElement;
-  const dimAlpha = saturation === 0 ? 0.08 : 0.14;
+  const dimAlpha = saturation === 0 ? 0.08 : 0.12;
   root.style.setProperty("--accent", `hsl(${hue} ${saturation}% ${lightness}%)`);
   root.style.setProperty("--accent-bright", `hsl(${hue} ${saturation}% ${Math.min(lightness + 14, 92)}%)`);
   root.style.setProperty("--accent-dim", `hsl(${hue} ${saturation}% ${lightness}% / ${dimAlpha})`);
