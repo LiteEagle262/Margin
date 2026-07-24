@@ -118,10 +118,11 @@ export function normalizeReasoningSettings(raw) {
 function collectReasoningFromUI() {
   const effortInput = document.getElementById("reasoning-effort");
   const showThinkingInput = document.getElementById("reasoning-show-thinking");
+  const keepOpenInput = document.getElementById("reasoning-keep-open");
   return normalizeReasoningSettings({
     effort: effortInput ? effortInput.value : settings.reasoning.effort,
     showThinking: showThinkingInput ? showThinkingInput.checked : settings.reasoning.showThinking,
-    keepThinkingOpen: settings.reasoning.keepThinkingOpen
+    keepThinkingOpen: keepOpenInput ? keepOpenInput.checked : settings.reasoning.keepThinkingOpen
   });
 }
 
@@ -182,6 +183,8 @@ function renderReasoningSettings(profile = getActiveModelReasoningProfile()) {
     }
   }
   if (showThinkingInput) showThinkingInput.checked = reasoning.showThinking;
+  const keepOpenInput = document.getElementById("reasoning-keep-open");
+  if (keepOpenInput) keepOpenInput.checked = reasoning.keepThinkingOpen;
 }
 
 export function syncReasoningForActiveModel() {
@@ -204,9 +207,22 @@ export function buildReasoningPreferences() {
   return Object.keys(prefs).length ? prefs : null;
 }
 
+function initReasoningSettings() {
+  const rerenderChat = async () => {
+    // Dynamic imports avoid a static cycle (chat-view imports this module).
+    const { flushSettingsAutosave } = await import("../core.js");
+    await flushSettingsAutosave();
+    const { renderChatHistory } = await import("../../ui/chat-view.js");
+    renderChatHistory();
+  };
+  document.getElementById("reasoning-show-thinking")?.addEventListener("change", rerenderChat);
+  document.getElementById("reasoning-keep-open")?.addEventListener("change", rerenderChat);
+}
+
 export const reasoningSection = {
   key: "reasoning",
   normalize: normalizeReasoningSettings,
   render: syncReasoningForActiveModel,
-  collect: collectReasoningFromUI
+  collect: collectReasoningFromUI,
+  init: initReasoningSettings
 };

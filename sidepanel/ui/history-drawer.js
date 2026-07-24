@@ -65,7 +65,11 @@ export function renderHistoryList() {
     const textSpan = document.createElement("span");
     textSpan.className = "history-item-title";
     textSpan.textContent = session.title || "New Chat";
-    textSpan.addEventListener("click", () => {
+    item.appendChild(textSpan);
+
+    // The whole row switches chats — a listener only on the title span left
+    // dead zones above/below the text where clicks did nothing.
+    item.addEventListener("click", () => {
       if (isAgentRunning && session.id !== currentChatId) {
         showToast("Stop the current response before switching chats");
         return;
@@ -74,7 +78,7 @@ export function renderHistoryList() {
       saveChats();
       renderChatHistory();
       renderHistoryList();
-      
+
       const backdrop = document.getElementById("drawer-backdrop");
       const drawer = document.getElementById("history-drawer");
       if (drawer && backdrop) {
@@ -83,7 +87,6 @@ export function renderHistoryList() {
         setTimeout(() => backdrop.classList.add("hidden"), 250);
       }
     });
-    item.appendChild(textSpan);
 
     const actions = document.createElement("div");
     actions.className = "history-item-actions";

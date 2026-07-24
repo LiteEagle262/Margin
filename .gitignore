@@ -28,3 +28,4 @@ dist/
 # Go build output
 bin/
 coverage.out
+ui-mockups

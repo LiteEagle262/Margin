@@ -27,7 +27,7 @@
     <header class="app-header">
       <div class="logo-area">
         <button id="hamburger-menu-btn" class="header-icon-btn" title="Open Chat History">
-          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="3" y1="12" x2="21" y2="12"/>
             <line x1="3" y1="6" x2="21" y2="6"/>
             <line x1="3" y1="18" x2="21" y2="18"/>
@@ -35,7 +35,7 @@
         </button>
         <span class="logo-text">Margin</span>
       </div>
-      
+
       <div class="header-right">
         <button id="latch-tab-btn" class="header-icon-btn latch-tab-btn" title="Latch extension to current tab">
           <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -74,8 +74,6 @@
           </svg>
         </button>
 
-        <span id="active-model-badge" class="badge">No Key Configured</span>
-        <button type="button" id="openrouter-balance-badge" class="balance-badge" title="Reload OpenRouter balance" aria-label="Reload OpenRouter balance">Balance --</button>
         <button id="toggle-settings-btn" class="header-icon-btn" title="Open Settings">
           <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"/>
@@ -85,26 +83,19 @@
       </div>
     </header>
 
+    <div class="session-line">
+      <span id="active-model-badge" class="badge">No Key Configured</span>
+      <span class="seg-sep" aria-hidden="true">|</span>
+      <button type="button" id="openrouter-balance-badge" class="balance-badge" title="Reload OpenRouter balance" aria-label="Reload OpenRouter balance">Balance --</button>
+      <button type="button" id="reload-balance-btn" class="session-reload" title="Reload OpenRouter balance" aria-label="Reload OpenRouter balance">&#8635;</button>
+    </div>
+
     <div id="latched-tab-bar" class="latched-tab-bar hidden" role="status" aria-live="polite">
-      <span class="latched-tab-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="5" r="3"/>
-          <line x1="12" y1="22" x2="12" y2="8"/>
-          <path d="M5 12H2a10 10 0 0 0 20 0h-3"/>
-        </svg>
-      </span>
-      <span class="latched-tab-label">Latched:</span>
+      <span class="latched-tab-icon" aria-hidden="true">&#9875;</span>
+      <span class="latched-tab-label">latched:</span>
       <span class="latched-tab-text" id="latched-tab-text">—</span>
-      <button id="focus-latched-tab-btn" class="latched-tab-action" title="Focus latched tab" aria-label="Focus latched tab">
-        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-        </svg>
-      </button>
-      <button id="unlatch-tab-btn" class="latched-tab-action latched-tab-close" title="Unlatch" aria-label="Unlatch tab">
-        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
+      <button id="focus-latched-tab-btn" class="latched-tab-action" title="Focus latched tab" aria-label="Focus latched tab">&#8599;</button>
+      <button id="unlatch-tab-btn" class="latched-tab-action latched-tab-close" title="Unlatch" aria-label="Unlatch tab">&#215;</button>
     </div>
 
     <main class="app-content">
@@ -186,10 +177,8 @@
           <div id="workspace-strip" class="workspace-strip hidden">
             <div class="workspace-strip-header">
               <span class="workspace-strip-title">
-                <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                </svg>
-                <span>Workspace</span>
+                <span class="workspace-ico" aria-hidden="true">&#9636;</span>
+                <span>workspace</span>
                 <span class="workspace-count">0 files</span>
               </span>
             </div>
@@ -197,18 +186,19 @@
           </div>
 
           <div class="input-row">
+            <input type="file" id="screenshot-input" multiple class="hidden">
+
+            <textarea id="chat-textarea" placeholder="type a request…" rows="1"></textarea>
+
             <button id="attach-screenshot-btn" class="attach-btn" title="Attach file(s)">
-              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
               </svg>
             </button>
-            <input type="file" id="screenshot-input" multiple class="hidden">
-            
-            <textarea id="chat-textarea" placeholder="Ask a question or request a scraper script..." rows="1"></textarea>
-            
+
             <button id="send-btn" class="send-btn" disabled title="Send" aria-label="Send message">
-              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none">
-                <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
               </svg>
             </button>
           </div>
@@ -258,6 +248,60 @@
         </div>
         
         <form id="settings-form" class="settings-form">
+          <div class="form-group appearance-section">
+            <div class="form-group-header">
+              <label>Appearance</label>
+              <span class="appearance-accent-chip" title="Current accent color">
+                <span id="appearance-accent-dot" class="appearance-accent-dot" aria-hidden="true"></span>
+                <span id="appearance-accent-hex">#C93653</span>
+              </span>
+            </div>
+            <div class="appearance-actions">
+              <button type="button" id="customize-look-btn" class="primary-action-btn" data-no-autosave="true">Customize look</button>
+            </div>
+            <span class="help-text">Pick the accent color used across the whole interface. Defaults to crimson.</span>
+          </div>
+
+          <div id="appearance-overlay" class="appearance-overlay hidden" role="dialog" aria-modal="true" aria-label="Customize look">
+            <div class="appearance-panel">
+              <div class="appearance-header">
+                <span class="appearance-title">Customize look</span>
+                <button type="button" id="appearance-close-btn" class="file-viewer-close" data-no-autosave="true" aria-label="Close customization">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="appearance-body">
+                <div class="appearance-ctl">
+                  <div class="appearance-ctl-label"><span>Hue</span><b id="appearance-hue-val">348°</b></div>
+                  <input type="range" id="appearance-hue" min="0" max="360" value="348" aria-label="Accent hue">
+                </div>
+                <div class="appearance-ctl">
+                  <div class="appearance-ctl-label"><span>Saturation</span><b id="appearance-sat-val">58%</b></div>
+                  <input type="range" id="appearance-sat" min="0" max="100" value="58" aria-label="Accent saturation">
+                </div>
+                <div class="appearance-ctl">
+                  <div class="appearance-ctl-label"><span>Brightness</span><b id="appearance-lig-val">50%</b></div>
+                  <input type="range" id="appearance-lig" min="35" max="80" value="50" aria-label="Accent brightness">
+                </div>
+                <div class="appearance-ctl">
+                  <div class="appearance-ctl-label"><span>Recommended</span></div>
+                  <div id="appearance-presets" class="appearance-presets"></div>
+                </div>
+                <div class="appearance-readout">
+                  <span id="appearance-readout-dot" class="appearance-readout-dot" aria-hidden="true"></span>
+                  <span id="appearance-readout-hex" class="appearance-readout-hex">#C93653</span>
+                  <span id="appearance-readout-hsl" class="appearance-readout-hsl">h348 s58 l50</span>
+                </div>
+                <div class="appearance-footer">
+                  <button type="button" id="appearance-reset-btn" class="text-btn">Reset to crimson</button>
+                  <span class="help-text">Changes apply live and save automatically. Saturation 0 gives a pure monochrome look.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="form-group provider-connection-group">
             <label for="ai-provider">AI Provider</label>
             <select id="ai-provider">
@@ -337,7 +381,12 @@
               <input type="checkbox" id="reasoning-show-thinking">
               Show returned model thinking in chat
             </label>
-            <span class="help-text" id="reasoning-thinking-help">Experimental. Only appears when the selected model/provider returns reasoning content through OpenRouter.</span>
+            <span class="help-text" id="reasoning-thinking-help">Off by default. Shows the model's reasoning as collapsible "thinking" boxes inside the reply. Only models that return reasoning content produce them.</span>
+            <label class="mcp-bridge-toggle" id="reasoning-keep-open-row">
+              <input type="checkbox" id="reasoning-keep-open">
+              Keep thinking boxes expanded by default
+            </label>
+            <span class="help-text">Off by default: thinking boxes start collapsed and open per-click. The "open all" button inside a thinking box toggles this same setting.</span>
           </div>
 
           <div class="form-group">

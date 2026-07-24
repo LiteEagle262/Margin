@@ -12,33 +12,6 @@ const TOOL_LOOP_LIMITS = {
 };
 let mcpRefreshGeneration = 0;
 
-const CONFIRM_EACH_USE_TOOLS = new Set([
-  "clear_network_logs",
-  "delete_file",
-  "evaluate_script",
-  "get_authenticator_code",
-  "get_cookies",
-  "get_network_log_detail",
-  "get_network_logs",
-  "get_storage",
-  "http_request",
-  "list_authenticator_domains",
-  "list_scripts",
-  "rename_file",
-  "run_js",
-  "search_scripts",
-  "start_network_capture",
-  "stop_network_capture",
-  "take_screenshot",
-]);
-
-function confirmSensitiveToolUse(name) {
-  if (!CONFIRM_EACH_USE_TOOLS.has(name)) return true;
-  return confirm(`Margin wants to run the sensitive tool “${name}”. Allow this one use?`);
-}
-
-
-
 export async function refreshMcpTools() {
   const generation = ++mcpRefreshGeneration;
   mcpToolRegistry.clear();
@@ -189,15 +162,6 @@ export async function executeTool(name, args = {}) {
       error_code: "tool_disabled",
       recoverable: false,
       message: `Tool "${name}" is disabled in Margin Tool Access settings.`
-    }, null, 2);
-  }
-  if (!confirmSensitiveToolUse(name)) {
-    return JSON.stringify({
-      ok: false,
-      tool: name,
-      error_code: "user_denied",
-      recoverable: false,
-      message: `The user declined the sensitive tool "${name}".`,
     }, null, 2);
   }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
