@@ -11,13 +11,6 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  TEMP_EMAIL_TOOLS,
-  TEMP_EMAIL_TOOL_NAMES,
-  callTempEmailTool,
-  setTempEmailFlags,
-  isTempEmailEnabled
-} from "./temp-email.js";
-import {
   WEB_SEARCH_TOOLS,
   WEB_SEARCH_TOOL_NAMES,
   setWebSearchEnabled,
@@ -31,6 +24,10 @@ const AUTH_TIMEOUT_MS = 5000;
 const MAX_BRIDGE_PAYLOAD_BYTES = 1024 * 1024;
 const MIN_AUTH_TOKEN_BYTES = 32;
 const CHROME_EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
+const NONCE_PATTERN = /^[0-9a-f]{32,128}$/;
+// Distinct prefixes stop a peer replaying one side's proof back at the other.
+const SERVER_PROOF_PREFIX = "margin-bridge-server:";
+const CLIENT_PROOF_PREFIX = "margin-bridge-client:";
 
 function readEnv(name, fallback = "") {
   return Object.prototype.hasOwnProperty.call(process.env, name)
@@ -44,7 +41,6 @@ const configuredAuthToken = readEnv("MARGIN_MCP_TOKEN");
 
 const pendingCalls = new Map();
 let extensionSocket = null;
-let extensionInfo = null;
 let mcpServer = null;
 // Expose no tools until the authenticated extension sends its allowlist and the
 // matching definitions. Both arrive together on `feature-flags/set`.
@@ -75,10 +71,16 @@ export function isAllowedBridgeOrigin(origin) {
   return typeof origin === "string" && CHROME_EXTENSION_ORIGIN.test(origin);
 }
 
-export function bridgeTokensMatch(expectedToken, providedToken) {
-  if (typeof expectedToken !== "string" || typeof providedToken !== "string") return false;
-  const expected = Buffer.from(expectedToken, "utf8");
-  const provided = Buffer.from(providedToken, "utf8");
+// The token itself is never sent over the bridge; each side proves it knows the
+// token by signing the other side's nonce.
+export function bridgeProof(token, payload) {
+  return crypto.createHmac("sha256", token).update(payload).digest("hex");
+}
+
+export function bridgeProofsMatch(expectedProof, providedProof) {
+  if (typeof expectedProof !== "string" || typeof providedProof !== "string") return false;
+  const expected = Buffer.from(expectedProof, "utf8");
+  const provided = Buffer.from(providedProof, "utf8");
   return expected.length === provided.length && crypto.timingSafeEqual(expected, provided);
 }
 
@@ -104,7 +106,6 @@ function clearExtensionControlledState() {
   const hadVisibleTools = visibleTools().length > 0;
   enabledToolNames = new Set();
   pushedTools = [];
-  setTempEmailFlags({ enabled: false, apiUrl: "", apiKey: "" });
   setWebSearchEnabled(false);
   if (hadVisibleTools && mcpServer) {
     mcpServer.notification({ method: "notifications/tools/list_changed" })
@@ -150,10 +151,7 @@ async function callExtensionTool(name, args = {}) {
 // Definitions for tools this process implements or gates on its own feature
 // flags. Every tool the bridge proxies into the extension is pushed over
 // `feature-flags/set` instead, so the extension stays the single source of truth.
-const LOCAL_TOOLS = [
-  ...WEB_SEARCH_TOOLS,
-  ...TEMP_EMAIL_TOOLS
-];
+const LOCAL_TOOLS = [...WEB_SEARCH_TOOLS];
 
 const MAX_PUSHED_TOOLS = 100;
 const MAX_TOOL_NAME_LENGTH = 64;
@@ -175,9 +173,8 @@ export function sanitizeToolDefinitions(raw) {
     const name = typeof entry.name === "string" ? entry.name : "";
     if (name.length > MAX_TOOL_NAME_LENGTH || !TOOL_NAME_PATTERN.test(name)) continue;
     if (seen.has(name)) continue;
-    // A pushed definition must never shadow a locally implemented tool:
-    // callTool routes temp-email by name before it reaches the proxy branch.
-    if (TEMP_EMAIL_TOOL_NAMES.has(name) || WEB_SEARCH_TOOL_NAMES.has(name)) continue;
+    // A pushed definition must never shadow a tool this process owns.
+    if (WEB_SEARCH_TOOL_NAMES.has(name)) continue;
 
     const inputSchema = entry.inputSchema;
     if (!inputSchema || typeof inputSchema !== "object" || Array.isArray(inputSchema)) continue;
@@ -197,7 +194,7 @@ export function sanitizeToolDefinitions(raw) {
 
 export function visibleTools() {
   const local = LOCAL_TOOLS.filter((tool) => {
-    if (TEMP_EMAIL_TOOL_NAMES.has(tool.name)) return isTempEmailEnabled();
+    if (!enabledToolNames.has(tool.name)) return false;
     if (WEB_SEARCH_TOOL_NAMES.has(tool.name)) return isWebSearchEnabled();
     return false;
   });
@@ -206,10 +203,6 @@ export function visibleTools() {
   // a tool the user switched off.
   const proxied = pushedTools.filter((tool) => enabledToolNames.has(tool.name));
   return [...proxied, ...local];
-}
-
-function knownToolNames() {
-  return new Set([...pushedTools, ...LOCAL_TOOLS].map((tool) => tool.name));
 }
 
 export function startBridgeServer({
@@ -258,6 +251,7 @@ export function startBridgeServer({
     }
 
     let authenticated = false;
+    let serverNonce = "";
     const authTimer = setTimeout(() => {
       if (!authenticated) {
         closeWithPolicyError(socket, "Registration timed out");
@@ -279,12 +273,26 @@ export function startBridgeServer({
       }
 
       if (!authenticated) {
-        if (message.type !== "register") {
+        if (message.type === "hello") {
+          if (!NONCE_PATTERN.test(String(message.nonce || ""))) {
+            closeWithPolicyError(socket, "Handshake nonce must be at least 16 random bytes as hex");
+            return;
+          }
+          serverNonce = crypto.randomBytes(32).toString("hex");
+          safeSocketSend(socket, {
+            type: "hello/proof",
+            proof: bridgeProof(requiredAuthToken, `${SERVER_PROOF_PREFIX}${message.nonce}`),
+            nonce: serverNonce
+          });
+          return;
+        }
+
+        if (message.type !== "register" || !serverNonce) {
           closeWithPolicyError(socket, "Registration required");
           return;
         }
 
-        if (!bridgeTokensMatch(requiredAuthToken, message.token)) {
+        if (!bridgeProofsMatch(bridgeProof(requiredAuthToken, `${CLIENT_PROOF_PREFIX}${serverNonce}`), message.proof)) {
           closeWithPolicyError(socket, "Authentication failed");
           return;
         }
@@ -299,11 +307,9 @@ export function startBridgeServer({
 
         clearExtensionControlledState();
         extensionSocket = socket;
-        extensionInfo = {
-          client: typeof message.client === "string" ? message.client.slice(0, 80) : "margin-extension",
-          version: typeof message.version === "string" ? message.version.slice(0, 40) : "unknown"
-        };
-        log(`Extension connected (${extensionInfo.client} ${extensionInfo.version})`);
+        const client = typeof message.client === "string" ? message.client.slice(0, 80) : "margin-extension";
+        const version = typeof message.version === "string" ? message.version.slice(0, 40) : "unknown";
+        log(`Extension connected (${client} ${version})`);
         const address = wss.address();
         const listeningPort = typeof address === "object" && address ? address.port : bridgePort;
         safeSocketSend(socket, { type: "register/ok", bridgePort: listeningPort });
@@ -315,7 +321,7 @@ export function startBridgeServer({
         return;
       }
 
-      if (message.type === "register") {
+      if (message.type === "hello" || message.type === "register") {
         socket.close(1008, "Already registered");
         return;
       }
@@ -325,16 +331,10 @@ export function startBridgeServer({
       }
 
       if (message.type === "feature-flags/set" && message.flags) {
-        const tempEmail = message.flags.tempEmail || {};
         // Compare whole definitions, not just names: a pushed schema or
         // description can now change while the tool list stays the same, and
         // clients still need to be told to refetch.
         const before = JSON.stringify(visibleTools());
-        const { changed } = setTempEmailFlags({
-          enabled: tempEmail.enabled === true,
-          apiUrl: typeof tempEmail.apiUrl === "string" ? tempEmail.apiUrl : undefined,
-          apiKey: typeof tempEmail.apiKey === "string" ? tempEmail.apiKey : undefined
-        });
         const access = message.flags.toolAccess;
         if (access?.enabled && typeof access.enabled === "object") {
           const entries = Object.entries(access.enabled);
@@ -348,8 +348,8 @@ export function startBridgeServer({
         const webSearch = message.flags.webSearch || {};
         setWebSearchEnabled(webSearch.enabled === true);
         const after = JSON.stringify(visibleTools());
-        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, webSearch.enabled=${isWebSearchEnabled()}, tools=${visibleTools().length})`);
-        if ((changed || before !== after) && mcpServer) {
+        log(`Feature flags updated (webSearch.enabled=${isWebSearchEnabled()}, tools=${visibleTools().length})`);
+        if (before !== after && mcpServer) {
           mcpServer.notification({ method: "notifications/tools/list_changed" })
             .catch(() => {});
         }
@@ -368,7 +368,6 @@ export function startBridgeServer({
       clearTimeout(authTimer);
       if (extensionSocket === socket) {
         extensionSocket = null;
-        extensionInfo = null;
         rejectPendingCalls("Margin extension disconnected");
         clearExtensionControlledState();
         log("Extension disconnected");
@@ -405,7 +404,7 @@ export async function main() {
   const server = new Server(
     {
       name: "margin-browser",
-      version: "1.0.0"
+      version: "2.0.0"
     },
     {
       capabilities: {
@@ -422,28 +421,11 @@ export async function main() {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
-    if (!knownToolNames().has(name)) {
-      return {
-        content: [{ type: "text", text: `Unknown tool: ${name}` }],
-        isError: true
-      };
-    }
-
     if (!visibleTools().some(tool => tool.name === name)) {
       return {
-        content: [{ type: "text", text: `Tool disabled: ${name}` }],
+        content: [{ type: "text", text: `Tool unavailable: ${name}` }],
         isError: true
       };
-    }
-
-    if (TEMP_EMAIL_TOOL_NAMES.has(name)) {
-      if (!isTempEmailEnabled()) {
-        return {
-          content: [{ type: "text", text: "Tool is disabled. Enable Temp Email Backend in the Margin extension settings." }],
-          isError: true
-        };
-      }
-      return await callTempEmailTool(name, args || {});
     }
 
     try {

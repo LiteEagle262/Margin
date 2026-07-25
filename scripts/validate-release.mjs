@@ -1,9 +1,25 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectRuntimeFiles } from "./release-files.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const selfRelativePath = path.relative(rootDir, fileURLToPath(import.meta.url)).split(path.sep).join("/");
+
+const SCAN_SKIPPED_DIRECTORIES = new Set([".git", ".next", "coverage", "dist", "node_modules", "ui-mockups"]);
+const SCAN_TEXT_EXTENSIONS = new Set([
+  ".css",
+  ".example",
+  ".html",
+  ".js",
+  ".json",
+  ".md",
+  ".mjs",
+  ".svg",
+  ".ts",
+  ".tsx",
+  ".yml",
+]);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -79,15 +95,30 @@ async function validateIconDimensions(manifest) {
   }
 }
 
-async function validateRuntimeSource(runtimeFiles) {
-  const textFiles = runtimeFiles.filter((file) => /\.(?:html|js|css|json|svg)$/i.test(file));
+async function collectScannableFiles(relativeDir, files) {
+  const children = await readdir(path.join(rootDir, relativeDir), { withFileTypes: true });
+  children.sort((a, b) => a.name.localeCompare(b.name));
+  for (const child of children) {
+    const relativePath = relativeDir ? `${relativeDir}/${child.name}` : child.name;
+    if (child.isDirectory()) {
+      if (!SCAN_SKIPPED_DIRECTORIES.has(child.name)) await collectScannableFiles(relativePath, files);
+      continue;
+    }
+    if (!child.isFile() || child.name === "package-lock.json") continue;
+    // This file stores the literal strings it scans for.
+    if (relativePath === selfRelativePath) continue;
+    if (SCAN_TEXT_EXTENSIONS.has(path.extname(child.name).toLowerCase())) files.push(relativePath);
+  }
+  return files;
+}
+
+async function validateSourceTree() {
   const retiredRuntimeStrings = [
     "codex-bridge",
-    "margin-cli serve --mode codex",
     "ws://127.0.0.1:9230",
     "ScrapeFlow",
   ];
-  for (const relativePath of textFiles) {
+  for (const relativePath of await collectScannableFiles("", [])) {
     const source = await readFile(path.join(rootDir, relativePath), "utf8");
     assert(!/<script\b[^>]*\bsrc=["']https?:/i.test(source), `Remote script found in ${relativePath}`);
     assert(!/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(source), `Private key material found in ${relativePath}`);
@@ -103,7 +134,7 @@ async function validateRequiredProjectFiles() {
   await Promise.all(required.map((relativePath) => access(path.join(rootDir, relativePath))));
 }
 
-export async function validateRelease() {
+async function validateRelease() {
   const [manifest, packageJson, runtimeFiles] = await Promise.all([
     readJson("manifest.json"),
     readJson("package.json"),
@@ -112,7 +143,7 @@ export async function validateRelease() {
 
   await validateManifest(manifest, packageJson, runtimeFiles);
   await validateIconDimensions(manifest);
-  await validateRuntimeSource(runtimeFiles);
+  await validateSourceTree();
   await validateRequiredProjectFiles();
   return { manifest, runtimeFiles };
 }

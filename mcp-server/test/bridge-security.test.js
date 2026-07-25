@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { once } from "node:events";
 import test from "node:test";
 import WebSocket from "ws";
 import {
-  bridgeTokensMatch,
+  bridgeProofsMatch,
   isAllowedBridgeOrigin,
   isLoopbackAddress,
   requireBridgeAuthToken,
@@ -12,6 +13,17 @@ import {
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
 const EXTENSION_ORIGIN = `chrome-extension://${"a".repeat(32)}`;
+
+function hmac(payload) {
+  return crypto.createHmac("sha256", TOKEN).update(payload).digest("hex");
+}
+
+async function handshake(socket) {
+  const clientNonce = crypto.randomBytes(32).toString("hex");
+  socket.send(JSON.stringify({ type: "hello", client: "margin-extension", version: "1.6.0", nonce: clientNonce }));
+  const [raw] = await once(socket, "message");
+  return { clientNonce, hello: JSON.parse(String(raw)), frame: String(raw) };
+}
 
 async function startTestServer() {
   const server = startBridgeServer({
@@ -45,11 +57,12 @@ test("requires a non-empty 32-byte authentication token", () => {
   assert.equal(requireBridgeAuthToken(`  ${TOKEN}  `), TOKEN);
 });
 
-test("compares authentication tokens exactly", () => {
-  assert.equal(bridgeTokensMatch(TOKEN, TOKEN), true);
-  assert.equal(bridgeTokensMatch(TOKEN, `${TOKEN}0`), false);
-  assert.equal(bridgeTokensMatch(TOKEN, "x".repeat(TOKEN.length)), false);
-  assert.equal(bridgeTokensMatch(TOKEN, undefined), false);
+test("compares handshake proofs exactly", () => {
+  const proof = hmac("margin-bridge-client:nonce");
+  assert.equal(bridgeProofsMatch(proof, proof), true);
+  assert.equal(bridgeProofsMatch(proof, `${proof}0`), false);
+  assert.equal(bridgeProofsMatch(proof, "x".repeat(proof.length)), false);
+  assert.equal(bridgeProofsMatch(proof, undefined), false);
 });
 
 test("accepts only loopback peers and Chrome extension browser origins", () => {
@@ -82,7 +95,7 @@ test("closes a client that sends privileged messages before registration", async
   const closePromise = once(socket, "close");
   socket.send(JSON.stringify({
     type: "feature-flags/set",
-    flags: { tempEmail: { enabled: true } }
+    flags: { webSearch: { enabled: true } }
   }));
 
   const [raw] = await once(socket, "message");
@@ -94,28 +107,62 @@ test("closes a client that sends privileged messages before registration", async
   assert.equal(code, 1008);
 });
 
-test("rejects a wrong token and accepts the generated extension token", async (t) => {
+test("proves the server knows the token without ever sending it", async (t) => {
   const { server, url } = await startTestServer();
   t.after(() => stopTestServer(server));
 
-  const rejected = await connect(url, { origin: EXTENSION_ORIGIN });
-  const rejectedClose = once(rejected, "close");
-  rejected.send(JSON.stringify({ type: "register", token: "x".repeat(32) }));
-  const [errorRaw] = await once(rejected, "message");
-  assert.equal(JSON.parse(String(errorRaw)).error, "Authentication failed");
-  assert.equal((await rejectedClose)[0], 1008);
+  const socket = await connect(url, { origin: EXTENSION_ORIGIN });
+  const { clientNonce, hello, frame } = await handshake(socket);
 
-  const accepted = await connect(url, { origin: EXTENSION_ORIGIN });
-  accepted.send(JSON.stringify({
+  assert.equal(hello.type, "hello/proof");
+  assert.equal(hello.proof, hmac(`margin-bridge-server:${clientNonce}`));
+  assert.notEqual(hello.proof, hmac(`margin-bridge-client:${clientNonce}`));
+  assert.match(hello.nonce, /^[0-9a-f]{64}$/);
+  assert.ok(!frame.includes(TOKEN), "the shared token must never be transmitted");
+
+  socket.send(JSON.stringify({
     type: "register",
-    token: TOKEN,
+    proof: hmac(`margin-bridge-client:${hello.nonce}`),
     client: "margin-extension",
-    version: "1.4.0"
+    version: "1.6.0"
   }));
-  const [okRaw] = await once(accepted, "message");
+  const [okRaw] = await once(socket, "message");
   const response = JSON.parse(String(okRaw));
   assert.equal(response.type, "register/ok");
   assert.equal(response.bridgePort, server.address().port);
-  accepted.close();
-  await once(accepted, "close");
+  socket.close();
+  await once(socket, "close");
+});
+
+test("rejects a peer that cannot produce a valid client proof", async (t) => {
+  const { server, url } = await startTestServer();
+  t.after(() => stopTestServer(server));
+
+  const guessing = await connect(url, { origin: EXTENSION_ORIGIN });
+  const guessingClose = once(guessing, "close");
+  await handshake(guessing);
+  guessing.send(JSON.stringify({ type: "register", proof: "0".repeat(64) }));
+  const [guessRaw] = await once(guessing, "message");
+  assert.equal(JSON.parse(String(guessRaw)).error, "Authentication failed");
+  assert.equal((await guessingClose)[0], 1008);
+
+  // Replaying the server's own proof must not authenticate the client.
+  const replaying = await connect(url, { origin: EXTENSION_ORIGIN });
+  const replayingClose = once(replaying, "close");
+  const replayed = await handshake(replaying);
+  replaying.send(JSON.stringify({
+    type: "register",
+    proof: hmac(`margin-bridge-server:${replayed.hello.nonce}`)
+  }));
+  const [replayRaw] = await once(replaying, "message");
+  assert.equal(JSON.parse(String(replayRaw)).error, "Authentication failed");
+  assert.equal((await replayingClose)[0], 1008);
+
+  // A stale client that still sends the plaintext token is refused outright.
+  const legacy = await connect(url, { origin: EXTENSION_ORIGIN });
+  const legacyClose = once(legacy, "close");
+  legacy.send(JSON.stringify({ type: "register", token: TOKEN }));
+  const [legacyRaw] = await once(legacy, "message");
+  assert.equal(JSON.parse(String(legacyRaw)).error, "Registration required");
+  assert.equal((await legacyClose)[0], 1008);
 });

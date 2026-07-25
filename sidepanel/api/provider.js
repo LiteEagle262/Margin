@@ -12,10 +12,8 @@ export const AI_PROVIDERS = Object.freeze({
     id: "openrouter",
     label: "OpenRouter",
     keyLabel: "OpenRouter API Key",
-    defaultModel: "anthropic/claude-3.5-sonnet",
+    defaultModel: "anthropic/claude-sonnet-4.5",
     keyPlaceholder: "sk-or-v1-...",
-    keyUrl: "https://openrouter.ai/keys",
-    authType: "apiKey",
   }),
   openai: Object.freeze({
     id: "openai",
@@ -23,8 +21,6 @@ export const AI_PROVIDERS = Object.freeze({
     keyLabel: "",
     defaultModel: "gpt-5.6-sol",
     keyPlaceholder: "",
-    keyUrl: "",
-    authType: "chatgptOAuth",
   }),
 });
 

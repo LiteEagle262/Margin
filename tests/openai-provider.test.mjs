@@ -550,8 +550,8 @@ test("OpenAI provider routes through the background port without using an API ke
     globalThis.chrome = originalChrome;
   }
 
-  assert.equal(getProviderDefinition("openai").authType, "chatgptOAuth");
-  assert.equal(getProviderDefinition("openai").keyUrl, "");
+  assert.equal(getProviderDefinition("openai").keyLabel, "");
+  assert.equal(getProviderDefinition("openai").keyPlaceholder, "");
 });
 
 test("OpenRouter requests never receive OpenAI continuation state", async () => {

@@ -7,12 +7,11 @@ export const WEB_SEARCH_TOOL_NAMES = new Set(["search_web", "fetch_search_result
 
 export function normalizeWebSearchSettings(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
-  const provider = String(value.provider || "tavily").toLowerCase();
   const depth = value.searchDepth === "advanced" ? "advanced" : "basic";
   const maxResults = Math.min(Math.max(Number(value.maxResults) || 5, 1), 10);
   return {
     enabled: value.enabled === true,
-    provider: ["tavily", "brave"].includes(provider) ? provider : "tavily",
+    provider: "tavily",
     apiKey: typeof value.apiKey === "string" ? value.apiKey.trim() : "",
     searchDepth: depth,
     maxResults,
@@ -20,9 +19,10 @@ export function normalizeWebSearchSettings(raw) {
   };
 }
 
-export function isWebSearchAvailable(rawConfig) {
-  const config = normalizeWebSearchSettings(rawConfig);
-  return config.enabled === true && Boolean(config.apiKey) && Boolean(WEB_SEARCH_PROVIDER_ADAPTERS[config.provider]);
+export function isWebSearchAvailable(webSearchSettings) {
+  if (!webSearchSettings || typeof webSearchSettings !== "object") return false;
+  const config = normalizeWebSearchSettings(webSearchSettings);
+  return config.enabled === true && config.apiKey !== "";
 }
 
 function createWebSearchError(message, extra = {}) {

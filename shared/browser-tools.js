@@ -84,17 +84,20 @@ async function runScriptInActiveTab(func, args = []) {
   return results && results[0] ? results[0].result : null;
 }
 
-async function runJsViaDebugger(code) {
+async function runJsViaDebugger(tool, code) {
   const tabId = await getActiveTabId();
   if (!tabId) throw new Error("No active tab in current window.");
 
   const keepAttached = isNetworkCaptureActive(tabId);
+  const scriptError = (message) => toolError(tool, "script_error", message, {
+    next_actions: [{ tool, reason: "Fix the script and retry." }]
+  });
 
   return new Promise((resolve) => {
     chrome.debugger.attach({ tabId }, "1.3", () => {
       const err = chrome.runtime.lastError;
       if (err && !err.message.includes("Already attached") && !err.message.includes("debugger is already attached")) {
-        resolve(`Error attaching debugger: ${err.message}`);
+        resolve(toolError(tool, "debugger_attach_failed", `Could not attach the debugger: ${err.message}`));
         return;
       }
 
@@ -117,7 +120,7 @@ async function runJsViaDebugger(code) {
         };
 
         if (cmdErr) {
-          finish(`Error executing script: ${cmdErr.message}`);
+          finish(scriptError(cmdErr.message));
           return;
         }
 
@@ -125,7 +128,7 @@ async function runJsViaDebugger(code) {
           const desc = result.exceptionDetails.exception
             ? result.exceptionDetails.exception.description
             : "Execution threw an exception";
-          finish(`Error executing script: ${desc}`);
+          finish(scriptError(String(desc)));
         } else {
           const resObj = result.result || {};
           if (resObj.value !== undefined) {
@@ -234,12 +237,6 @@ function findAuthenticatorKeyForDomain(keys, domain) {
   return match ? { domain: match, manualKey: keys[match] } : null;
 }
 
-async function getCurrentAuthenticatorDomain(args = {}) {
-  if (args.domain) return normalizeAuthenticatorDomain(args.domain);
-  const tab = await getActiveTabInfo();
-  return normalizeAuthenticatorDomain(tab?.url || "");
-}
-
 // The debugger can capture a latched background tab; captureVisibleTab cannot.
 async function captureTabViaDebugger(tabId) {
   const keepAttached = isNetworkCaptureActive(tabId);
@@ -286,111 +283,129 @@ function toolError(tool, errorCode, message, data = {}) {
   };
 }
 
-async function takePageSnapshot(args = {}) {
-  const limit = Math.min(Math.max(Number(args.limit) || 80, 10), 200);
-  const verbose = args.verbose === true;
-  return await runScriptInActiveTab((snapshotArgs) => {
-    const max = snapshotArgs.limit;
-    const includeVerbose = snapshotArgs.verbose === true;
-    const roleMap = {
-      A: "link",
-      BUTTON: "button",
-      INPUT: "textbox",
-      TEXTAREA: "textbox",
-      SELECT: "combobox",
-      OPTION: "option",
-      SUMMARY: "button"
+// Snapshots and interactions must agree on every uid, and chrome.scripting
+// serializes the injected function, so both jobs live in this one function.
+export function pageAgentScript(input) {
+  const INTERACTIVE_SELECTOR = [
+    "a[href]", "button", "input", "textarea", "select", "option", "summary",
+    "[role]", "[tabindex]", "[contenteditable='true']", "[onclick]"
+  ].join(",");
+  const ROLE_MAP = {
+    A: "link",
+    BUTTON: "button",
+    INPUT: "textbox",
+    TEXTAREA: "textbox",
+    SELECT: "combobox",
+    OPTION: "option",
+    SUMMARY: "button"
+  };
+
+  function hash(value) {
+    let h = 2166136261;
+    const text = String(value || "");
+    for (let i = 0; i < text.length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(36).slice(0, 6);
+  }
+
+  function cssPath(el) {
+    if (!el || el.nodeType !== 1) return "";
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && parts.length < 5) {
+      let part = node.tagName.toLowerCase();
+      const cls = Array.from(node.classList || []).slice(0, 2);
+      if (cls.length) part += "." + cls.map((c) => CSS.escape(c)).join(".");
+      const parent = node.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+      }
+      parts.unshift(part);
+      node = parent;
+    }
+    return parts.join(" > ");
+  }
+
+  // el.value is deliberately not part of the name: it feeds the uid, and a uid
+  // must survive the field being filled.
+  function accessibleName(el) {
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const text = labelledBy.split(/\s+/)
+        .map((id) => document.getElementById(id)?.innerText || "")
+        .join(" ")
+        .trim();
+      if (text) return text;
+    }
+    const aria = el.getAttribute("aria-label");
+    if (aria) return aria.trim();
+    if (el.labels && el.labels.length) {
+      const text = Array.from(el.labels).map((label) => label.innerText).join(" ").trim();
+      if (text) return text;
+    }
+    if (el.alt) return String(el.alt).trim();
+    if (el.placeholder) return String(el.placeholder).trim();
+    if (el.title) return String(el.title).trim();
+    return String(el.innerText || "").replace(/\s+/g, " ").trim();
+  }
+
+  function roleFor(el) {
+    return el.getAttribute("role") || ROLE_MAP[el.tagName] || (el.isContentEditable ? "textbox" : "generic");
+  }
+
+  function isVisible(el) {
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  }
+
+  // No positional index: hidden nodes are filtered out of snapshots but not out
+  // of the lookup list, so any index would disagree between the two.
+  function uidFor(el) {
+    return `sf-${el.tagName.toLowerCase()}-${hash(`${roleFor(el)}|${accessibleName(el).slice(0, 160)}|${cssPath(el)}`)}`;
+  }
+
+  function summarize(el) {
+    const rect = el.getBoundingClientRect();
+    return {
+      uid: uidFor(el),
+      role: roleFor(el),
+      name: accessibleName(el).slice(0, 120),
+      tag: el.tagName.toLowerCase(),
+      selector: cssPath(el),
+      visible: isVisible(el),
+      enabled: !el.disabled && el.getAttribute("aria-disabled") !== "true",
+      rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
     };
-    const interactiveSelector = [
-      "a[href]", "button", "input", "textarea", "select", "option", "summary",
-      "[role]", "[tabindex]", "[contenteditable='true']", "[onclick]"
-    ].join(",");
+  }
 
-    function hash(value) {
-      let h = 2166136261;
-      const text = String(value || "");
-      for (let i = 0; i < text.length; i += 1) {
-        h ^= text.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-      }
-      return (h >>> 0).toString(36).slice(0, 6);
-    }
+  const nodes = Array.from(document.querySelectorAll(INTERACTIVE_SELECTOR));
 
-    function cssPath(el) {
-      if (!el || el.nodeType !== 1) return "";
-      if (el.id) return `#${CSS.escape(el.id)}`;
-      const parts = [];
-      let node = el;
-      while (node && node.nodeType === 1 && parts.length < 5) {
-        let part = node.tagName.toLowerCase();
-        const cls = Array.from(node.classList || []).slice(0, 2);
-        if (cls.length) part += "." + cls.map((c) => CSS.escape(c)).join(".");
-        const parent = node.parentElement;
-        if (parent) {
-          const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
-          if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
-        }
-        parts.unshift(part);
-        node = parent;
-      }
-      return parts.join(" > ");
-    }
-
-    function accessibleName(el) {
-      const labelledBy = el.getAttribute("aria-labelledby");
-      if (labelledBy) {
-        const text = labelledBy.split(/\s+/)
-          .map((id) => document.getElementById(id)?.innerText || "")
-          .join(" ")
-          .trim();
-        if (text) return text;
-      }
-      const aria = el.getAttribute("aria-label");
-      if (aria) return aria.trim();
-      if (el.labels && el.labels.length) {
-        const text = Array.from(el.labels).map((label) => label.innerText).join(" ").trim();
-        if (text) return text;
-      }
-      if (el.alt) return String(el.alt).trim();
-      if (el.placeholder) return String(el.placeholder).trim();
-      if (el.title) return String(el.title).trim();
-      return String(el.innerText || el.value || "").replace(/\s+/g, " ").trim();
-    }
-
-    function roleFor(el) {
-      return el.getAttribute("role") || roleMap[el.tagName] || (el.isContentEditable ? "textbox" : "generic");
-    }
-
-    function isVisible(el) {
-      const style = getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
-    }
-
+  if (input.op === "snapshot") {
+    const includeVerbose = input.verbose === true;
+    const candidates = includeVerbose
+      ? nodes.concat(Array.from(document.querySelectorAll("h1,h2,h3,p,li,td,th,label")))
+      : nodes;
     const seen = new Set();
-    let candidates = Array.from(document.querySelectorAll(interactiveSelector));
-    if (includeVerbose) {
-      candidates = candidates.concat(Array.from(document.querySelectorAll("h1,h2,h3,p,li,td,th,label")));
-    }
-
     const elements = [];
     for (const el of candidates) {
       if (seen.has(el)) continue;
       seen.add(el);
-      if (!includeVerbose && !isVisible(el)) continue;
+      const visible = isVisible(el);
+      if (!includeVerbose && !visible) continue;
       const rect = el.getBoundingClientRect();
-      const name = accessibleName(el).slice(0, 160);
-      const role = roleFor(el);
-      const selector = cssPath(el);
-      const uid = `sf-${elements.length + 1}-${el.tagName.toLowerCase()}-${hash(`${role}|${name}|${selector}`)}`;
       elements.push({
-        uid,
-        role,
-        name,
+        uid: uidFor(el),
+        role: roleFor(el),
+        name: accessibleName(el).slice(0, 160),
         tag: el.tagName.toLowerCase(),
         type: el.getAttribute("type") || "",
-        selector,
-        visible: isVisible(el),
+        selector: cssPath(el),
+        visible,
         enabled: !el.disabled && el.getAttribute("aria-disabled") !== "true",
         checked: typeof el.checked === "boolean" ? el.checked : undefined,
         value: ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) ? String(el.value || "").slice(0, 120) : undefined,
@@ -401,7 +416,7 @@ async function takePageSnapshot(args = {}) {
           height: Math.round(rect.height)
         }
       });
-      if (elements.length >= max) break;
+      if (elements.length >= input.limit) break;
     }
 
     return {
@@ -410,11 +425,81 @@ async function takePageSnapshot(args = {}) {
       title: document.title,
       text_preview: (document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 1200),
       viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY },
-      focused_uid: null,
       element_count: elements.length,
       elements
     };
-  }, [{ limit, verbose }]);
+  }
+
+  let el = null;
+  if (input.uid) el = nodes.find((node) => uidFor(node) === input.uid) || null;
+  if (!el && input.selector) el = document.querySelector(input.selector);
+  if (!el) {
+    const needle = String(input.selector || "").toLowerCase();
+    const wantedTag = (/^sf-([a-z0-9]+)-/.exec(String(input.uid || "")) || [])[1] || "";
+    const candidates = nodes
+      .filter((node) => isVisible(node))
+      .map((node) => summarize(node))
+      .filter((item) => {
+        if (needle) return item.name.toLowerCase().includes(needle) || item.selector.toLowerCase().includes(needle);
+        return wantedTag ? item.tag === wantedTag : true;
+      })
+      .slice(0, 8);
+    return { ok: false, error_code: "target_not_found", message: "No element matched that uid or selector.", candidates };
+  }
+  if (!isVisible(el)) {
+    return { ok: false, error_code: "target_not_visible", message: "Element exists but is not visible.", target: summarize(el) };
+  }
+  if (el.disabled || el.getAttribute("aria-disabled") === "true") {
+    return { ok: false, error_code: "target_disabled", message: "Element exists but is disabled.", target: summarize(el) };
+  }
+
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  el.focus?.();
+  const target = summarize(el);
+
+  if (input.action === "click") {
+    if (input.dblClick) {
+      el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
+    } else {
+      el.click();
+    }
+    return { ok: true, message: "Element clicked.", target };
+  }
+
+  if (input.action === "hover") {
+    el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
+    el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window }));
+    return { ok: true, message: "Element hovered.", target };
+  }
+
+  if (input.action === "fill" || input.action === "type") {
+    const value = String(input.value ?? input.text ?? "");
+    const type = String(el.getAttribute("type") || "").toLowerCase();
+    const isToggle = type === "checkbox" || type === "radio";
+    const wanted = isToggle ? (value === "true" || value === "1" || value.toLowerCase() === "yes") : value;
+    if (isToggle) el.checked = wanted;
+    else if (el.isContentEditable) el.textContent = value;
+    else el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    const actual = isToggle ? el.checked : String((el.isContentEditable ? el.textContent : el.value) ?? "");
+    if (actual !== wanted) {
+      return {
+        ok: false,
+        error_code: "value_not_applied",
+        message: `Element kept "${String(actual).slice(0, 120)}" instead of the requested value.`,
+        target
+      };
+    }
+    return { ok: true, message: "Element value set.", target, value };
+  }
+
+  return { ok: false, error_code: "unknown_action", message: `Unknown action ${input.action}.`, target };
+}
+
+async function takePageSnapshot(args = {}) {
+  const limit = Math.min(Math.max(Number(args.limit) || 80, 10), 200);
+  return await runScriptInActiveTab(pageAgentScript, [{ op: "snapshot", limit, verbose: args.verbose === true }]);
 }
 
 async function maybeAttachSnapshot(result, args = {}) {
@@ -429,126 +514,15 @@ async function maybeAttachSnapshot(result, args = {}) {
 }
 
 async function interactWithElement(tool, args = {}, action = "click") {
-  const result = await runScriptInActiveTab((input) => {
-    function hash(value) {
-      let h = 2166136261;
-      const text = String(value || "");
-      for (let i = 0; i < text.length; i += 1) {
-        h ^= text.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-      }
-      return (h >>> 0).toString(36).slice(0, 6);
-    }
-    function cssPath(el) {
-      if (!el || el.nodeType !== 1) return "";
-      if (el.id) return `#${CSS.escape(el.id)}`;
-      const parts = [];
-      let node = el;
-      while (node && node.nodeType === 1 && parts.length < 5) {
-        let part = node.tagName.toLowerCase();
-        const cls = Array.from(node.classList || []).slice(0, 2);
-        if (cls.length) part += "." + cls.map((c) => CSS.escape(c)).join(".");
-        const parent = node.parentElement;
-        if (parent) {
-          const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
-          if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
-        }
-        parts.unshift(part);
-        node = parent;
-      }
-      return parts.join(" > ");
-    }
-    function nameFor(el) {
-      return (el.getAttribute("aria-label") || el.innerText || el.value || el.placeholder || el.title || "").replace(/\s+/g, " ").trim();
-    }
-    function roleFor(el) {
-      return el.getAttribute("role") || ({ A: "link", BUTTON: "button", INPUT: "textbox", TEXTAREA: "textbox", SELECT: "combobox" }[el.tagName]) || "generic";
-    }
-    function isVisible(el) {
-      const style = getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
-    }
-    function uidFor(el, index) {
-      const selector = cssPath(el);
-      const name = nameFor(el).slice(0, 160);
-      const role = roleFor(el);
-      return `sf-${index + 1}-${el.tagName.toLowerCase()}-${hash(`${role}|${name}|${selector}`)}`;
-    }
-    function summarize(el, index) {
-      const rect = el.getBoundingClientRect();
-      return {
-        uid: uidFor(el, index),
-        role: roleFor(el),
-        name: nameFor(el).slice(0, 120),
-        tag: el.tagName.toLowerCase(),
-        selector: cssPath(el),
-        visible: isVisible(el),
-        enabled: !el.disabled && el.getAttribute("aria-disabled") !== "true",
-        rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
-      };
-    }
-    const nodes = Array.from(document.querySelectorAll([
-      "a[href]", "button", "input", "textarea", "select", "option", "summary",
-      "[role]", "[tabindex]", "[contenteditable='true']", "[onclick]"
-    ].join(",")));
-    let el = null;
-    let index = -1;
-    if (input.uid) {
-      index = nodes.findIndex((node, idx) => uidFor(node, idx) === input.uid);
-      el = index >= 0 ? nodes[index] : null;
-    }
-    if (!el && input.selector) {
-      el = document.querySelector(input.selector);
-      index = Math.max(0, nodes.indexOf(el));
-    }
-    if (!el) {
-      const needle = String(input.selector || input.uid || "").toLowerCase();
-      const candidates = nodes
-        .map((node, idx) => summarize(node, idx))
-        .filter((item) => item.name.toLowerCase().includes(needle) || item.selector.toLowerCase().includes(needle))
-        .slice(0, 8);
-      return { ok: false, error_code: "target_not_found", message: "No matching element was found.", candidates };
-    }
-    if (!isVisible(el)) {
-      return { ok: false, error_code: "target_not_visible", message: "Element exists but is not visible.", target: summarize(el, index) };
-    }
-    if (el.disabled || el.getAttribute("aria-disabled") === "true") {
-      return { ok: false, error_code: "target_disabled", message: "Element exists but is disabled.", target: summarize(el, index) };
-    }
-    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-    el.focus?.();
-    const target = summarize(el, index);
-    if (input.action === "click") {
-      if (input.dblClick) {
-        el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
-      } else {
-        el.click();
-      }
-      return { ok: true, message: "Element clicked.", target };
-    }
-    if (input.action === "hover") {
-      el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
-      el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window }));
-      return { ok: true, message: "Element hovered.", target };
-    }
-    if (input.action === "fill" || input.action === "type") {
-      const value = String(input.value ?? input.text ?? "");
-      const tag = el.tagName;
-      const type = String(el.getAttribute("type") || "").toLowerCase();
-      if (type === "checkbox" || type === "radio") {
-        el.checked = value === "true" || value === "1" || value.toLowerCase() === "yes";
-      } else if (tag === "SELECT") {
-        el.value = value;
-      } else {
-        el.value = value;
-      }
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { ok: true, message: "Element value set.", target, value };
-    }
-    return { ok: false, error_code: "unknown_action", message: `Unknown action ${input.action}.`, target };
-  }, [{ ...args, action }]);
+  const result = await runScriptInActiveTab(pageAgentScript, [{
+    op: "interact",
+    action,
+    uid: args.uid,
+    selector: args.selector,
+    value: args.value,
+    text: args.text,
+    dblClick: args.dblClick === true
+  }]);
 
   if (!result || result.ok !== true) {
     return toolError(tool, result?.error_code || "action_failed", result?.message || "Element action failed.", {
@@ -628,10 +602,8 @@ async function evaluateScriptFunction(args = {}) {
   const fnText = String(args.function || "");
   if (!fnText.trim()) return toolError("evaluate_script", "missing_function", "evaluate_script requires function.", { recoverable: false });
   const wrapped = `(${fnText})(...${JSON.stringify(Array.isArray(args.args) ? args.args : [])})`;
-  const raw = await runJsViaDebugger(wrapped);
-  if (typeof raw === "string" && raw.startsWith("Error executing script:")) {
-    return toolError("evaluate_script", "script_error", raw, { next_actions: [{ tool: "evaluate_script", reason: "Fix the function body and retry." }] });
-  }
+  const raw = await runJsViaDebugger("evaluate_script", wrapped);
+  if (raw?.ok === false) return raw;
   return toolOk("evaluate_script", "Script evaluated.", { result: raw });
 }
 
@@ -682,22 +654,21 @@ async function httpRequestViaPage(args = {}) {
 }
 
 // chrome.cookies is required for httpOnly cookies that page scripts cannot access.
+// Cookies are read only for the tab the user is on, so a page cannot talk the
+// agent into handing over another site's session.
 async function getCookiesForTool(args = {}) {
-  let targetUrl = "";
-  if (args.domain) {
-    const raw = String(args.domain).trim();
-    targetUrl = raw.includes("://") ? raw : `https://${raw.replace(/^\/+/, "")}`;
-  } else {
-    const tab = await getActiveTabInfo();
-    targetUrl = tab?.url || "";
+  if (!chrome.cookies) {
+    return toolError("get_cookies", "missing_permission", "The optional \"cookies\" permission is not granted. Grant it in Margin settings to read cookies.", { recoverable: false });
   }
-  if (!targetUrl) return "Error: No domain supplied and no active tab URL available.";
+  const tab = await getActiveTabInfo();
+  const targetUrl = tab?.url || "";
+  if (!targetUrl) return toolError("get_cookies", "no_active_tab", "No active tab URL is available.", { recoverable: false });
 
   let normalizedUrl;
   try {
     normalizedUrl = new URL(targetUrl).toString();
   } catch {
-    return `Error: Invalid domain or URL "${targetUrl}".`;
+    return toolError("get_cookies", "invalid_tab_url", `The active tab URL "${targetUrl}" is not a readable web URL.`, { recoverable: false });
   }
 
   const query = { url: normalizedUrl };
@@ -739,7 +710,7 @@ async function getStorageForTool(args = {}) {
     }
     return data;
   }, [{ type, keys }]);
-  if (!result) return "Error: Failed to read page storage.";
+  if (!result) return toolError("get_storage", "execution_failed", "Page storage could not be read. Ensure a normal web page is the active tab.", { recoverable: false });
   return JSON.stringify(result, null, 2);
 }
 
@@ -768,7 +739,7 @@ async function listScriptsInPage() {
     } catch {}
     return { url: location.href, count: scripts.length, scripts };
   });
-  if (!result) return "Error: Failed to list page scripts.";
+  if (!result) return toolError("list_scripts", "execution_failed", "Page scripts could not be listed. Ensure a normal web page is the active tab.", { recoverable: false });
   return JSON.stringify(result, null, 2);
 }
 
@@ -839,7 +810,7 @@ export async function executePageTool(name, args = {}) {
     switch (name) {
       case "get_active_tab": {
         const tab = await getActiveTabInfo();
-        if (!tab) return "Error: No active tab found.";
+        if (!tab) return toolError(name, "no_active_tab", "No active tab found.", { recoverable: false });
         return JSON.stringify(tab, null, 2);
       }
 
@@ -849,7 +820,7 @@ export async function executePageTool(name, args = {}) {
       }
 
       case "navigate": {
-        if (!args.url) return "Error: navigate requires url.";
+        if (!args.url) return toolError(name, "missing_url", "navigate requires url.", { recoverable: false });
         return await navigateActiveTab(String(args.url));
       }
 
@@ -866,7 +837,7 @@ export async function executePageTool(name, args = {}) {
             outerHtml: outerHtml.slice(0, 80000)
           };
         });
-        if (!domResult) return "Error: Failed to extract DOM content.";
+        if (!domResult) return toolError(name, "execution_failed", "DOM content could not be extracted. Ensure a normal web page is the active tab.", { recoverable: false });
         return `Successfully fetched DOM.
 Text content:
 ${domResult.bodyText}
@@ -877,12 +848,12 @@ ${domResult.outerHtml}`;
 
       case "take_screenshot": {
         const tabId = await getActiveTabId();
-        if (!tabId) return "Error: No active tab found to capture.";
+        if (!tabId) return toolError(name, "no_active_tab", "No active tab found to capture.", { recoverable: false });
         let tab;
         try {
           tab = await chrome.tabs.get(tabId);
         } catch {
-          return "Error: Target tab is no longer available.";
+          return toolError(name, "tab_gone", "Target tab is no longer available.", { recoverable: false });
         }
         let screenshotDataUrl;
         let note = "Screenshot captured successfully.";
@@ -919,17 +890,27 @@ ${domResult.outerHtml}`;
         if (!args.uid && !args.selector) {
           const focused = await runScriptInActiveTab((text, submitKey) => {
             const el = document.activeElement;
-            if (!el || el === document.body) return { ok: false, message: "No focused input is available." };
-            el.value = String(text || "");
+            if (!el || el === document.body) return { ok: false, error_code: "no_focused_input", message: "No focused input is available." };
+            const value = String(text || "");
+            if (el.isContentEditable) el.textContent = value;
+            else el.value = value;
             el.dispatchEvent(new Event("input", { bubbles: true }));
             el.dispatchEvent(new Event("change", { bubbles: true }));
+            const actual = String((el.isContentEditable ? el.textContent : el.value) ?? "");
+            if (actual !== value) {
+              return {
+                ok: false,
+                error_code: "value_not_applied",
+                message: `Focused element kept "${actual.slice(0, 120)}" instead of the requested text.`
+              };
+            }
             if (submitKey) {
               el.dispatchEvent(new KeyboardEvent("keydown", { key: submitKey, bubbles: true, cancelable: true }));
               el.dispatchEvent(new KeyboardEvent("keyup", { key: submitKey, bubbles: true, cancelable: true }));
             }
             return { ok: true, tag: el.tagName, submitKey };
           }, [args.text, args.submitKey || ""]);
-          if (!focused?.ok) return toolError("type_text", "no_focused_input", focused?.message || "No focused input is available.");
+          if (!focused?.ok) return toolError("type_text", focused?.error_code || "no_focused_input", focused?.message || "No focused input is available.");
           return await maybeAttachSnapshot(toolOk("type_text", "Typed into focused element.", focused), args);
         }
         return await interactWithElement("type_text", { ...args, value: args.text }, "type");
@@ -978,9 +959,10 @@ ${domResult.outerHtml}`;
       }
 
       case "run_js": {
-        const result = await runJsViaDebugger(args.code);
-        if (typeof result === "string" && result.includes("SyntaxError: Illegal return statement")) {
-          return toolError("run_js", "illegal_return", result, {
+        if (!args.code) return toolError(name, "missing_code", "run_js requires code.", { recoverable: false });
+        const result = await runJsViaDebugger("run_js", String(args.code));
+        if (result?.ok === false && String(result.message).includes("Illegal return statement")) {
+          return toolError("run_js", "illegal_return", result.message, {
             next_actions: [{ tool: "evaluate_script", reason: "Use evaluate_script with a function body instead of top-level return." }]
           });
         }
@@ -1028,13 +1010,16 @@ ${domResult.outerHtml}`;
         }, null, 2);
       }
 
+      // Codes are minted only for the site the user is on, never for an
+      // arbitrary saved domain a page could name.
       case "get_authenticator_code": {
-        const domain = await getCurrentAuthenticatorDomain(args);
-        if (!domain) return "Error: No domain supplied and no active website domain is available.";
+        const tab = await getActiveTabInfo();
+        const domain = normalizeAuthenticatorDomain(tab?.url || "");
+        if (!domain) return toolError(name, "no_active_domain", "No active website domain is available.", { recoverable: false });
         const keys = await getAuthenticatorKeyMap();
         const match = findAuthenticatorKeyForDomain(keys, domain);
         if (!match) {
-          return `Error: No authenticator manual key saved for "${domain}". Add it in Margin settings first.`;
+          return toolError(name, "no_saved_key", `No authenticator manual key saved for "${domain}". Add it in Margin settings first.`, { recoverable: false });
         }
         const token = await generateTotp(match.manualKey);
         return JSON.stringify({
@@ -1048,10 +1033,10 @@ ${domResult.outerHtml}`;
       }
 
       default:
-        return `Error: Unknown tool "${name}"`;
+        return toolError(name, "unknown_tool", `Unknown tool "${name}".`, { recoverable: false, next_actions: [] });
     }
   } catch (err) {
-    return `Error executing tool "${name}": ${err.message}`;
+    return toolError(name, "tool_execution_failed", `${name} failed: ${err.message}`);
   }
 }
 
@@ -1068,9 +1053,8 @@ export function formatToolResultForMcp(result) {
   }
 
   const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-  const isError = result?.ok === false || text.startsWith("Error:");
   return {
     content: [{ type: "text", text }],
-    isError
+    isError: result?.ok === false
   };
 }

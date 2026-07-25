@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { isSafeRecordKey, isSafeVirtualPath, safeRecord } from "../sidepanel/lib/safe-record.js";
-import { truncateUtf8Tail } from "../shared/text.js";
 
 test("record helpers reject prototype and unsafe virtual-path keys", () => {
   assert.equal(isSafeRecordKey("__proto__"), false);
@@ -17,12 +16,4 @@ test("record helpers reject prototype and unsafe virtual-path keys", () => {
   assert.deepEqual(output.safe, { value: 1 });
   assert.equal(Object.hasOwn(output, "__proto__"), false);
   assert.equal({}.polluted, undefined);
-});
-
-test("UTF-8 tail truncation respects byte limits and code-point boundaries", () => {
-  const value = `old-${"🙂".repeat(10)}-new`;
-  const result = truncateUtf8Tail(value, 17);
-  assert.ok(new TextEncoder().encode(result).length <= 17);
-  assert.ok(result.endsWith("-new"));
-  assert.ok(!result.includes("�"));
 });

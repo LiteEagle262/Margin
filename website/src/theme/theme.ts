@@ -26,7 +26,7 @@ export const marginTheme = createTheme({
     success: { main: "#4ade80" },
   },
   typography: {
-    fontFamily: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     h1: {
       fontWeight: 700,
       letterSpacing: "-0.03em",

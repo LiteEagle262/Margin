@@ -7,9 +7,8 @@ import { DEFAULT_SYSTEM_PROMPT } from "../agent/context.js";
 import { AI_PROVIDERS, getProviderDefinition, normalizeProviderId } from "../api/provider.js";
 import { syncModelPickerValue, updateModelBadge, refreshProviderBadge } from "../ui/model-picker.js";
 import { refreshMcpTools } from "../tools/execute.js";
-import { BUILT_IN_TOOL_NAMES } from "./sections/tool-access.js";
+import { BUILT_IN_TOOL_NAMES, DEFAULT_ENABLED_TOOLS } from "./sections/tool-access.js";
 
-const CONFIG_EXPORT_VERSION = 5;
 const AUTOSAVE_DELAY_MS = 350;
 
 let autosaveTimer = null;
@@ -76,7 +75,6 @@ export async function loadSettings() {
     if (needsProviderMigration) {
       await writeStoredSettings(storageObject);
     }
-    await chrome.storage.local.remove("codexBridge");
     renderSettingsFormFromState();
     lastSavedSnapshot = JSON.stringify(storageObject);
     announceSettingsSaved();
@@ -292,7 +290,6 @@ export function buildRedactedSettingsExport(config = settings) {
     openai: { ...portable.providerConfigs.openai, apiKey: "" },
   };
   portable.mcpBridge = { ...portable.mcpBridge, token: "" };
-  portable.tempEmail = { ...portable.tempEmail, apiKey: "" };
   portable.webSearch = { ...portable.webSearch, apiKey: "" };
   portable.authManualKeys = {};
   portable.mcpServers = portable.mcpServers.map((server) => ({
@@ -305,9 +302,7 @@ export function buildRedactedSettingsExport(config = settings) {
 function buildConfigExport(config = settings) {
   return {
     exportType: "margin-config",
-    version: CONFIG_EXPORT_VERSION,
     exportedAt: new Date().toISOString(),
-    secretsIncluded: false,
     settings: buildRedactedSettingsExport(config),
   };
 }
@@ -346,10 +341,6 @@ function restoreOmittedSecrets(imported) {
     ...(restored.mcpBridge || {}),
     token: restored.mcpBridge?.token || settings.mcpBridge.token,
   };
-  restored.tempEmail = {
-    ...(restored.tempEmail || {}),
-    apiKey: restored.tempEmail?.apiKey || settings.tempEmail.apiKey,
-  };
   restored.webSearch = {
     ...(restored.webSearch || {}),
     apiKey: restored.webSearch?.apiKey || settings.webSearch.apiKey,
@@ -372,18 +363,49 @@ export function exportConfig() {
   }
 }
 
+function describeRiskyImportChanges(imported) {
+  const changes = [];
+
+  const newlyEnabled = [...BUILT_IN_TOOL_NAMES]
+    .filter((name) =>
+      imported.toolAccess.enabled[name] === true &&
+      settings.toolAccess.enabled?.[name] !== true &&
+      !DEFAULT_ENABLED_TOOLS.has(name))
+    .sort();
+  if (newlyEnabled.length > 0) {
+    changes.push(`Turns on ${newlyEnabled.length} tool(s) that are off by default: ${newlyEnabled.join(", ")}`);
+  }
+
+  imported.mcpServers.forEach((server) => {
+    const current = settings.mcpServers.find((existing) => existing.id === server.id);
+    if (!current) {
+      changes.push(`Adds MCP server "${server.name}" (${server.url || "no URL"})`);
+    } else if (current.url !== server.url) {
+      changes.push(`Repoints MCP server "${server.name}" to ${server.url || "no URL"}`);
+    }
+  });
+
+  return changes;
+}
+
 export async function importConfigFile(file) {
   if (!file) return;
 
   try {
     const text = await file.text();
     const raw = JSON.parse(text);
-    const importedSource = unwrapImportedConfig(raw);
-    const importedSettings = normalizeAppConfig(
-      raw.secretsIncluded === false
-        ? restoreOmittedSecrets(importedSource)
-        : importedSource,
-    );
+    const importedSettings = normalizeAppConfig(restoreOmittedSecrets(unwrapImportedConfig(raw)));
+
+    const riskyChanges = describeRiskyImportChanges(importedSettings);
+    if (riskyChanges.length > 0) {
+      const approved = confirm(
+        `This config grants new access:\n\n- ${riskyChanges.join("\n- ")}\n\nImport it anyway?`,
+      );
+      if (!approved) {
+        showToast("Config import cancelled.");
+        return;
+      }
+    }
 
     await persistSettings(importedSettings);
     renderSettingsFormFromState();

@@ -7,7 +7,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import Footer from "@/components/Footer";
 import Header from "@/components/Header";
-import { GITHUB_CONFIGURED, GITHUB_URL, SUPPORT_EMAIL } from "@/lib/constants";
+import { GITHUB_URL, SUPPORT_EMAIL } from "@/lib/constants";
 
 export const metadata: Metadata = {
   title: "Privacy Policy — Margin",
@@ -34,7 +34,7 @@ const sections = [
     paragraphs: [
       "When you use an AI feature, the prompt and necessary browser context are sent to the provider you selected, such as OpenAI or OpenRouter. Those providers process data under their own terms and privacy policies.",
       "When you connect ChatGPT, Margin uses a device-code OAuth flow: you authorize the connection on OpenAI's website, and Margin stores the resulting tokens locally so it can refresh the connection. Margin never receives your OpenAI password. This compatibility flow is not a separately endorsed third-party integration and may change if OpenAI changes its service.",
-      "If you enable an external MCP server, web search, or a self-hosted temporary-email backend, Margin sends the information required for that request to the service you configured. Margin does not sell personal information or use extension data for advertising.",
+      "If you enable an external MCP server or web search, Margin sends the information required for that request to the service you configured. Margin does not sell personal information or use extension data for advertising.",
     ],
   },
   {
@@ -110,7 +110,7 @@ export default function PrivacyPage() {
               <Typography color="text.secondary" sx={{ lineHeight: 1.7 }}>
                 {SUPPORT_EMAIL ? (
                   <>Email <Link href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</Link>.</>
-                ) : GITHUB_CONFIGURED ? (
+                ) : GITHUB_URL ? (
                   <>Open an issue in the{" "}<Link href={GITHUB_URL} target="_blank" rel="noopener noreferrer">Margin repository</Link>.</>
                 ) : (
                   <>The publisher support contact will be listed with the public release.</>

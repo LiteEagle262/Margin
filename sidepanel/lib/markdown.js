@@ -1,18 +1,20 @@
 import { escapeHtml } from "./format.js";
 
+let codeBlockCounter = 0;
+
 export function formatMarkdown(text) {
   if (!text) return "";
 
   const source = String(text).replace(/\r\n/g, "\n");
   const codeBlocks = [];
   const tokenized = source.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (match, lang, code) => {
-    const id = `code-${Date.now()}-${codeBlocks.length}`;
+    const id = `code-${++codeBlockCounter}`;
     codeBlocks.push({
       id,
       lang: (lang || "text").trim() || "text",
       code: code.replace(/^\n|\n$/g, "")
     });
-    return `\n@@CODE_BLOCK_${codeBlocks.length - 1}@@\n`;
+    return `\n@@CODE_BLOCK_${id}@@\n`;
   });
 
   const blocks = tokenized.split(/\n{2,}/);
@@ -23,9 +25,9 @@ export function formatMarkdown(text) {
 function renderMarkdownBlock(block, codeBlocks) {
   if (!block) return "";
 
-  const codeMatch = block.match(/^@@CODE_BLOCK_(\d+)@@$/);
+  const codeMatch = block.match(/^@@CODE_BLOCK_(code-\d+)@@$/);
   if (codeMatch) {
-    const item = codeBlocks[Number(codeMatch[1])];
+    const item = codeBlocks.find(entry => entry.id === codeMatch[1]);
     if (!item) return "";
     const safeLang = escapeHtml(item.lang);
     const safeCode = escapeHtml(item.code);
@@ -75,6 +77,8 @@ function formatInlineMarkdown(html) {
 
 export function bindCopyButtons(scope) {
   scope.querySelectorAll(".copy-code-btn").forEach(btn => {
+    if (btn.dataset.bound === "true") return;
+    btn.dataset.bound = "true";
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const targetId = btn.getAttribute("data-copy-target");
@@ -89,6 +93,8 @@ export function bindCopyButtons(scope) {
   });
 
   scope.querySelectorAll(".code-header-toggle").forEach(header => {
+    if (header.dataset.bound === "true") return;
+    header.dataset.bound = "true";
     header.addEventListener("click", (e) => {
       if (e.target.closest(".copy-code-btn")) return;
       const container = header.closest(".code-container");

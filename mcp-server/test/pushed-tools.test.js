@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { once } from "node:events";
 import test from "node:test";
 import WebSocket from "ws";
@@ -43,8 +44,8 @@ test("pushed definitions are validated rather than trusted", () => {
 
 test("pushed definitions cannot shadow tools this process implements", () => {
   const sanitized = sanitizeToolDefinitions([
-    tool("create_temp_email"),
     tool("search_web"),
+    tool("fetch_search_result"),
     tool("get_dom")
   ]);
   assert.deepEqual(sanitized.map((entry) => entry.name), ["get_dom"]);
@@ -71,7 +72,20 @@ test("the server serves the extension's pushed tools and forgets them on disconn
 
   const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}`, { origin: EXTENSION_ORIGIN });
   await once(socket, "open");
-  socket.send(JSON.stringify({ type: "register", token: TOKEN, client: "margin-extension", version: "1.4.3" }));
+  socket.send(JSON.stringify({
+    type: "hello",
+    client: "margin-extension",
+    version: "1.6.0",
+    nonce: crypto.randomBytes(32).toString("hex")
+  }));
+  const [helloRaw] = await once(socket, "message");
+  const hello = JSON.parse(String(helloRaw));
+  socket.send(JSON.stringify({
+    type: "register",
+    proof: crypto.createHmac("sha256", TOKEN).update(`margin-bridge-client:${hello.nonce}`).digest("hex"),
+    client: "margin-extension",
+    version: "1.6.0"
+  }));
   const [registered] = await once(socket, "message");
   assert.equal(JSON.parse(String(registered)).type, "register/ok");
 

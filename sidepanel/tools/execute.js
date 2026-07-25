@@ -11,6 +11,15 @@ const TOOL_LOOP_LIMITS = {
   sameFailure: 2,
   repeatedReadOnly: 3
 };
+
+// Tools that only observe. Any successful tool outside this set is progress and
+// clears the repeated-observation counters.
+const READ_ONLY_TOOL_NAMES = new Set([
+  "take_snapshot", "get_dom", "get_active_tab", "list_tabs", "take_screenshot",
+  "get_network_logs", "get_network_log_detail", "get_cookies", "get_storage",
+  "list_scripts", "search_scripts", "list_authenticator_domains",
+  "read_file", "list_files", "search_files", "get_file_info", "read_context_item"
+]);
 let mcpRefreshGeneration = 0;
 
 export async function refreshMcpTools() {
@@ -80,21 +89,33 @@ export function getAllAgentTools() {
 }
 
 
+function toolFailure(tool, errorCode, message, recoverable = true) {
+  return { ok: false, tool, error_code: errorCode, recoverable, message };
+}
+
 export async function executePageToolViaBackground(name, args = {}) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: "page-tool", name, arguments: args }, (response) => {
       if (chrome.runtime.lastError) {
-        resolve(`Error: ${chrome.runtime.lastError.message}`);
+        resolve(toolFailure(name, "background_unavailable", chrome.runtime.lastError.message));
         return;
       }
-      resolve(response?.result ?? "Error: No response from background service worker.");
+      if (!response) {
+        resolve(toolFailure(name, "no_response", "No response from background service worker."));
+        return;
+      }
+      if (response.ok === false) {
+        resolve(toolFailure(name, "tool_refused", String(response.result || `The background service worker refused "${name}".`), false));
+        return;
+      }
+      resolve(response.result);
     });
   });
 }
 
 async function executeMcpTool(fullName, args) {
   const entry = mcpToolRegistry.get(fullName);
-  if (!entry) return `Error: Unknown MCP tool "${fullName}"`;
+  if (!entry) return toolFailure(fullName, "unknown_mcp_tool", `Unknown MCP tool "${fullName}".`, false);
 
   const connection = mcpConnections.get(entry.serverId);
   if (!connection) {
@@ -102,7 +123,7 @@ async function executeMcpTool(fullName, args) {
   }
   const activeConnection = mcpConnections.get(entry.serverId);
   if (!activeConnection) {
-    return `Error: MCP server for tool "${entry.originalName}" is not connected.`;
+    return toolFailure(fullName, "mcp_not_connected", `MCP server for tool "${entry.originalName}" is not connected.`);
   }
 
   try {
@@ -120,35 +141,17 @@ async function executeMcpTool(fullName, args) {
         return JSON.stringify(item);
       }).join("\n");
       if (result.isError === true) {
-        return {
-          ok: false,
-          tool: fullName,
-          error_code: "mcp_tool_error",
-          recoverable: true,
-          message: text || `MCP tool "${entry.originalName}" failed.`,
-        };
+        return toolFailure(fullName, "mcp_tool_error", text || `MCP tool "${entry.originalName}" failed.`);
       }
       return text;
     }
 
     if (result?.isError === true) {
-      return {
-        ok: false,
-        tool: fullName,
-        error_code: "mcp_tool_error",
-        recoverable: true,
-        message: `MCP tool "${entry.originalName}" failed.`,
-      };
+      return toolFailure(fullName, "mcp_tool_error", `MCP tool "${entry.originalName}" failed.`);
     }
     return typeof result === "string" ? result : JSON.stringify(result, null, 2);
   } catch (err) {
-    return {
-      ok: false,
-      tool: fullName,
-      error_code: "mcp_request_failed",
-      recoverable: true,
-      message: `MCP tool "${entry.originalName}" failed: ${err.message}`,
-    };
+    return toolFailure(fullName, "mcp_request_failed", `MCP tool "${entry.originalName}" failed: ${err.message}`);
   }
 }
 
@@ -168,13 +171,7 @@ export async function executeTool(name, args = {}) {
   if (name === BATCH_TOOL_NAME) {
     // Actions re-enter here, so each one hits the same access gate, loop guards,
     // and dispatch a standalone call would.
-    return executeBatchTool(args, {
-      runTool: executeTool,
-      isToolEnabled: isBuiltInToolEnabled,
-      guardCall: guardToolCallBeforeExecution,
-      evaluateGuard: evaluateToolLoopGuard,
-      parseResult: parseToolResultObject
-    });
+    return executeBatchTool(args);
   }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
     return executeWorkspaceTool(name, args);
@@ -223,13 +220,12 @@ function stableToolArgsKey(args = {}) {
 export function evaluateToolLoopGuard(toolName, toolArgs, result) {
   if (!activeToolRunStats || !BUILT_IN_TOOL_NAMES.has(toolName)) return null;
   const parsed = parseToolResultObject(result);
-  const failed = parsed?.ok === false || (typeof result === "string" && result.startsWith("Error:"));
+  const failed = parsed?.ok === false;
 
-  const readOnly = new Set(["get_dom", "take_snapshot"]);
-  if (!readOnly.has(toolName) && !failed) {
+  if (!READ_ONLY_TOOL_NAMES.has(toolName) && !failed) {
     activeToolRunStats.readOnlyCalls = {};
   }
-  if (readOnly.has(toolName)) {
+  if (READ_ONLY_TOOL_NAMES.has(toolName)) {
     const key = toolName;
     activeToolRunStats.readOnlyCalls[key] = (activeToolRunStats.readOnlyCalls[key] || 0) + 1;
     if (activeToolRunStats.readOnlyCalls[key] > TOOL_LOOP_LIMITS.repeatedReadOnly) {
@@ -263,8 +259,12 @@ export function evaluateToolLoopGuard(toolName, toolArgs, result) {
 
 globalThis.chrome?.runtime?.onMessage?.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "mcp/tool-call") return false;
-  executeTool(String(message.name || ""), message.arguments || {})
-    .then((result) => {
+  (async () => {
+    try {
+      // The call reaches every window's side panel; only the addressed one runs it.
+      const panelWindow = await chrome.windows.getCurrent();
+      if (panelWindow?.id !== message.targetWindowId) return;
+      const result = await executeTool(String(message.name || ""), message.arguments || {});
       if (result && typeof result === "object" && result.screenshot) {
         const data = String(result.screenshot).replace(/^data:image\/[^;]+;base64,/, "");
         sendResponse({
@@ -284,11 +284,10 @@ globalThis.chrome?.runtime?.onMessage?.addListener((message, _sender, sendRespon
         ok: true,
         result: {
           content: [{ type: "text", text }],
-          isError: result?.ok === false || text.startsWith("Error:"),
+          isError: parseToolResultObject(result)?.ok === false,
         },
       });
-    })
-    .catch((error) => {
+    } catch (error) {
       sendResponse({
         ok: false,
         result: {
@@ -296,6 +295,7 @@ globalThis.chrome?.runtime?.onMessage?.addListener((message, _sender, sendRespon
           isError: true,
         },
       });
-    });
+    }
+  })();
   return true;
 });

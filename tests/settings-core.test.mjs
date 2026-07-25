@@ -221,7 +221,6 @@ test("config export removes credentials, URL secrets, and authenticator seeds", 
       enabled: true,
       url: "https://user:password@example.com/mcp?token=secret#fragment",
     }],
-    tempEmail: { enabled: true, apiUrl: "https://mail.example.com", apiKey: "mail-secret" },
     webSearch: { enabled: true, provider: "tavily", apiKey: "search-secret" },
     authManualKeys: { "example.com": "JBSWY3DPEHPK3PXP" },
   });
@@ -233,7 +232,6 @@ test("config export removes credentials, URL secrets, and authenticator seeds", 
   assert.equal(exported.providerConfigs.openai.apiKey, "");
   assert.equal(exported.mcpBridge.token, "");
   assert.equal(Object.hasOwn(exported, "openaiOAuth"), false);
-  assert.equal(exported.tempEmail.apiKey, "");
   assert.equal(exported.webSearch.apiKey, "");
   assert.deepEqual(exported.authManualKeys, {});
   assert.equal(exported.mcpServers[0].url, "https://example.com/mcp");

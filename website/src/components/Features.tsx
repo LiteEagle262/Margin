@@ -11,7 +11,7 @@ import BuildIcon from "@mui/icons-material/Build";
 import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import HubIcon from "@mui/icons-material/Hub";
 import ExtensionIcon from "@mui/icons-material/Extension";
-import HistoryIcon from "@mui/icons-material/History";
+import NetworkCheckIcon from "@mui/icons-material/NetworkCheck";
 import { FEATURES } from "@/lib/constants";
 
 const ICONS: Record<string, React.ReactNode> = {
@@ -20,7 +20,7 @@ const ICONS: Record<string, React.ReactNode> = {
   Folder: <FolderOpenIcon />,
   Hub: <HubIcon />,
   Extension: <ExtensionIcon />,
-  History: <HistoryIcon />,
+  Network: <NetworkCheckIcon />,
 };
 
 export default function Features() {
@@ -31,7 +31,7 @@ export default function Features() {
           Features
         </Typography>
         <Typography variant="h3" sx={{ mt: 1, mb: 1, maxWidth: 520 }}>
-          Everything you need to scrape smarter
+          Everything the agent needs on the page
         </Typography>
         <Typography color="text.secondary" sx={{ mb: 5, maxWidth: 560 }}>
           A focused Chrome extension — not another bloated platform. Real browser access, real files, real models.
