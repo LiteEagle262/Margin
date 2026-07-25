@@ -1,15 +1,20 @@
 import { settings } from "../../state/store.js";
 
-export const DEFAULT_MAX_TOOL_CALLS = 14;
+export const DEFAULT_MAX_TOOL_CALLS = 30;
 export const DEFAULT_FALLBACK_CONTEXT_WINDOW = 128000;
+const MAX_MAX_TOOL_CALLS = 500;
 const MIN_FALLBACK_CONTEXT_WINDOW = 4000;
 
 export function normalizeAgentLimitsSettings(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
 
+  // Blank, 0, or invalid falls back to the default; there is no "unlimited".
   let maxToolCalls = Math.floor(Number(value.maxToolCalls));
-  if (!Number.isFinite(maxToolCalls) || maxToolCalls < 0) {
+  if (!Number.isFinite(maxToolCalls) || maxToolCalls < 1) {
     maxToolCalls = DEFAULT_MAX_TOOL_CALLS;
+  }
+  if (maxToolCalls > MAX_MAX_TOOL_CALLS) {
+    maxToolCalls = MAX_MAX_TOOL_CALLS;
   }
 
   let fallbackContextWindow = Math.floor(Number(value.fallbackContextWindow));

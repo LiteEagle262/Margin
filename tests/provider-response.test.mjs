@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   classifyProviderResponse,
   describeEmptyProviderResponse,
+  isRetryableProviderError,
   MAX_OPENAI_CONTINUATION_TURNS,
 } from "../sidepanel/agent/provider-response.js";
 import { buildApiMessagesForChat } from "../sidepanel/agent/context.js";
@@ -18,6 +19,30 @@ test("provider responses prioritize tool calls and visible messages", () => {
     kind: "message",
     content: "Finished.",
   });
+});
+
+test("provider errors retry only on transient statuses and network failures", () => {
+  for (const status of [429, 500, 502, 503, 529]) {
+    assert.equal(
+      isRetryableProviderError(new Error(`OpenRouter Error (${status}): upstream hiccup`)),
+      true,
+      `status ${status} is retryable`,
+    );
+  }
+  assert.equal(isRetryableProviderError(new TypeError("Failed to fetch")), true);
+  assert.equal(isRetryableProviderError(new Error("NetworkError when attempting to fetch resource.")), true);
+
+  for (const status of [400, 401, 403]) {
+    assert.equal(
+      isRetryableProviderError(new Error(`OpenAI response failed (${status}): rejected`)),
+      false,
+      `status ${status} is not retryable`,
+    );
+  }
+  const aborted = new Error("The user aborted a request.");
+  aborted.name = "AbortError";
+  assert.equal(isRetryableProviderError(aborted), false);
+  assert.equal(isRetryableProviderError(null), false);
 });
 
 test("OpenAI reasoning-only responses continue instead of surfacing an empty-message error", () => {

@@ -3,13 +3,36 @@ import { readStoredSettings, writeStoredSettings } from "../state/persistence.js
 import { SETTINGS_SECTIONS } from "./registry.js";
 import { showToast } from "../lib/toast.js";
 import { downloadTextFile } from "../lib/download.js";
-import { DEFAULT_SYSTEM_PROMPT } from "../agent/context.js";
 import { AI_PROVIDERS, getProviderDefinition, normalizeProviderId } from "../api/provider.js";
 import { syncModelPickerValue, updateModelBadge, refreshProviderBadge } from "../ui/model-picker.js";
 import { refreshMcpTools } from "../tools/execute.js";
 import { BUILT_IN_TOOL_NAMES, DEFAULT_ENABLED_TOOLS } from "./sections/tool-access.js";
 
 const AUTOSAVE_DELAY_MS = 350;
+
+// Verbatim copy of the default prompt that used to ship as the textarea's
+// literal content. Settings autosave froze it into chrome.storage.local for
+// anyone who ever opened Settings, so stored prompts matching it are migrated
+// to "" (empty = use the built-in default from agent/context.js).
+const LEGACY_DEFAULT_SYSTEM_PROMPT = `You are Margin, a professional browser-automation and web scraping AI assistant.
+You can execute actions on the current webpage using your built-in tools. For browser interaction, prefer take_snapshot first, then use uid-based click_element, fill_element, fill_form, hover_element, press_key, and wait_for. Use get_dom for raw scraping/debugging when the compact snapshot is insufficient.
+If a test login asks for a 2FA/authenticator code, use get_authenticator_code for the active domain when a manual key has been saved in settings.
+For debugging API calls and page requests, use get_network_logs first because a settings-enabled hindsight buffer may already exist for the latched tab. If no logs are available, use start_network_capture before interacting with the page, then get_network_logs or get_network_log_detail to inspect URLs, status codes, headers, failures, and redacted bodies.
+If MCP servers are configured, you also have additional tools prefixed with mcp__ — use those when they are relevant.
+
+IMPORTANT — File output rules:
+- NEVER paste full scripts or multi-line code in chat markdown/code blocks.
+- ALWAYS use write_file to save scripts, configs, and other files. The user gets a compact file card they can click to view and copy.
+- Files are saved to a persistent workspace shared across chats. Use list_files for an overview, search_files to find files by name or content, get_file_info for metadata, read_file to load contents, rename_file and delete_file to manage files.
+- After write_file, give a brief explanation only — do not repeat the file contents.`;
+
+function collapsePromptWhitespace(text) {
+  return String(text).replace(/\s+/g, " ").trim();
+}
+
+function isLegacyDefaultPrompt(text) {
+  return collapsePromptWhitespace(text) === collapsePromptWhitespace(LEGACY_DEFAULT_SYSTEM_PROMPT);
+}
 
 let autosaveTimer = null;
 let autosaveQueue = Promise.resolve();
@@ -72,7 +95,10 @@ export async function loadSettings() {
       String(result.customModel || "").trim() !== "" ||
       String(result.providerConfigs?.openai?.apiKey || "").trim() !== "" ||
       needsToolAccessMigration;
-    if (needsProviderMigration) {
+    // A stored prompt that normalized to "" was the frozen legacy default.
+    const needsPromptMigration = String(result.systemPrompt || "").trim() !== "" &&
+      storageObject.systemPrompt === "";
+    if (needsProviderMigration || needsPromptMigration) {
       await writeStoredSettings(storageObject);
     }
     renderSettingsFormFromState();
@@ -95,9 +121,10 @@ export function normalizeAppConfig(raw) {
     providerConfigs.openrouter.model = value.customModel.trim();
   }
   const activeProvider = providerConfigs[aiProvider];
-  const storedPrompt = typeof value.systemPrompt === "string" && value.systemPrompt.trim()
-    ? value.systemPrompt.trim()
-    : DEFAULT_SYSTEM_PROMPT;
+  // Empty string means "use the built-in default prompt". Stored copies of the
+  // retired textarea default are migrated to empty so default edits take effect.
+  const rawPrompt = typeof value.systemPrompt === "string" ? value.systemPrompt.trim() : "";
+  const storedPrompt = isLegacyDefaultPrompt(rawPrompt) ? "" : rawPrompt;
 
   const config = {
     aiProvider,

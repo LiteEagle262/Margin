@@ -7,8 +7,8 @@ import { executeTool, guardToolCallBeforeExecution, evaluateToolLoopGuard, parse
 import { isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
 
 export const BATCH_TOOL_NAME = "browser_batch";
-// Every action spends one call from the run's budget (DEFAULT_MAX_TOOL_CALLS is
-// 14), so a larger batch than this could never finish.
+// Every action spends one call from the run's tool budget, so keep batches small
+// enough that one batch cannot consume most of a turn's budget on its own.
 export const MAX_BATCH_ACTIONS = 10;
 
 export const BATCHABLE_TOOL_NAMES = new Set([
@@ -82,10 +82,10 @@ function describeActionResult(result, limit) {
     : safe;
 }
 
-async function runAction(tool, toolArgs) {
+async function runAction(tool, toolArgs, surface) {
   let result;
   try {
-    result = await executeTool(tool, toolArgs);
+    result = await executeTool(tool, toolArgs, surface);
   } catch (err) {
     result = {
       ok: false,
@@ -98,7 +98,7 @@ async function runAction(tool, toolArgs) {
   return evaluateToolLoopGuard(tool, toolArgs, result) || result;
 }
 
-export async function executeBatchTool(args = {}) {
+export async function executeBatchTool(args = {}, surface = "panel") {
   const actions = Array.isArray(args.actions) ? args.actions : null;
   if (!actions || actions.length === 0) {
     return batchError('browser_batch needs a non-empty "actions" array.');
@@ -138,7 +138,7 @@ export async function executeBatchTool(args = {}) {
     }
 
     const toolArgs = actionArguments(action);
-    const result = await runAction(tool, toolArgs);
+    const result = await runAction(tool, toolArgs, surface);
     const failed = parseToolResultObject(result)?.ok === false;
     results.push({
       index,
@@ -163,7 +163,7 @@ export async function executeBatchTool(args = {}) {
   let snapshot;
   if (args.include_snapshot === true && succeeded > 0 && isBuiltInToolEnabled("take_snapshot")) {
     const guard = guardToolCallBeforeExecution("take_snapshot");
-    snapshot = describeActionResult(guard || await runAction("take_snapshot", {}), MAX_ACTION_RESULT_CHARS);
+    snapshot = describeActionResult(guard || await runAction("take_snapshot", {}, surface), MAX_ACTION_RESULT_CHARS);
   }
 
   return JSON.stringify({

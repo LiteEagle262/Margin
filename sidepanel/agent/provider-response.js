@@ -1,5 +1,20 @@
 export const MAX_OPENAI_CONTINUATION_TURNS = 4;
 
+// Both provider layers embed the HTTP status in parentheses, e.g.
+// "OpenRouter Error (429): ..." / "OpenAI response failed (503): ...".
+// The status code itself is not threaded through, so classify by message.
+const RETRYABLE_STATUS_PATTERN = /\((?:429|500|502|503|529)\)/;
+const NETWORK_FAILURE_PATTERN = /failed to fetch|networkerror/i;
+
+export function isRetryableProviderError(error) {
+  if (!error || error.name === "AbortError") return false;
+  const message = String(error.message || "");
+  if (RETRYABLE_STATUS_PATTERN.test(message)) return true;
+  // fetch rejects with TypeError("Failed to fetch") on network-level failures;
+  // the OpenAI background port forwards the same text as a plain Error.
+  return error instanceof TypeError || NETWORK_FAILURE_PATTERN.test(message);
+}
+
 export function describeEmptyProviderResponse(providerId, message) {
   if (providerId !== "openai") {
     return "The provider completed without returning a message or tool call.";
