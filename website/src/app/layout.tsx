@@ -3,12 +3,12 @@ import ThemeRegistry from "@/components/ThemeRegistry";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Margin — AI web scraping in your browser",
+  title: "Margin — AI browser agent for Chrome",
   description:
-    "Open-source Chrome extension with ChatGPT OAuth and OpenRouter support, browser automation tools, MCP integrations, and a local file workspace.",
+    "Open-source Chrome extension with ChatGPT OAuth and OpenRouter support, browser and network tools, MCP integrations, and a local file workspace.",
   openGraph: {
     title: "Margin",
-    description: "Build web scrapers with an AI that sees the page.",
+    description: "Drive your browser with an AI that sees the page.",
     type: "website",
   },
 };

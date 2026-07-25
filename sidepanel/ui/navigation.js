@@ -1,4 +1,6 @@
 import { ensureProviderModelsLoaded } from "./model-picker.js";
+import { syncMcpBridgeStatusPolling } from "../settings/sections/mcp-bridge.js";
+import { syncOpenAIAccountPolling } from "../settings/sections/openai-account.js";
 
 export function initSettingsToggle() {
   const toggleSettingsBtn = document.getElementById("toggle-settings-btn");
@@ -38,6 +40,8 @@ export function switchView(viewName) {
     if (headerExportChatBtn) headerExportChatBtn.classList.add("hidden");
     if (headerClearChatBtn) headerClearChatBtn.classList.add("hidden");
     ensureProviderModelsLoaded();
+    syncMcpBridgeStatusPolling();
+    syncOpenAIAccountPolling();
   } else {
     if (settingsView) settingsView.classList.remove("active");
     if (chatView) chatView.classList.add("active");
@@ -45,7 +49,9 @@ export function switchView(viewName) {
     if (headerNewChatBtn) headerNewChatBtn.classList.remove("hidden");
     if (headerExportChatBtn) headerExportChatBtn.classList.remove("hidden");
     if (headerClearChatBtn) headerClearChatBtn.classList.remove("hidden");
-    
+    syncMcpBridgeStatusPolling();
+    syncOpenAIAccountPolling();
+
     const chatHistory = document.getElementById("chat-history");
     if (chatHistory) {
       chatHistory.scrollTop = chatHistory.scrollHeight;

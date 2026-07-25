@@ -1,10 +1,15 @@
 // Runs several browser tools in one call. Both callers reach this through
 // executeTool — the in-chat agent directly, the MCP bridge via mcp/tool-call —
 // so there is exactly one executor and one place where per-action access is
-// enforced. Dependencies are injected to keep this module free of chrome APIs.
+// enforced.
+
+import { executeTool, guardToolCallBeforeExecution, evaluateToolLoopGuard, parseToolResultObject } from "./execute.js";
+import { isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
 
 export const BATCH_TOOL_NAME = "browser_batch";
-export const MAX_BATCH_ACTIONS = 20;
+// Every action spends one call from the run's budget (DEFAULT_MAX_TOOL_CALLS is
+// 14), so a larger batch than this could never finish.
+export const MAX_BATCH_ACTIONS = 10;
 
 export const BATCHABLE_TOOL_NAMES = new Set([
   "navigate", "click_element", "fill_element", "fill_form", "type_text",
@@ -21,18 +26,7 @@ const TOTAL_RESULT_BUDGET = 24000;
 const MAX_ACTION_RESULT_CHARS = 4000;
 const MIN_ACTION_RESULT_CHARS = 600;
 
-function defaultParseResult(result) {
-  if (result && typeof result === "object") return result;
-  if (typeof result !== "string") return null;
-  try {
-    const parsed = JSON.parse(result);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function defaultSettle(ms) {
+function settle(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -52,7 +46,7 @@ function perActionCharLimit(actionCount) {
 }
 
 // Returns "" when the action may run, otherwise the reason it may not.
-function describeActionRejection(tool, isToolEnabled) {
+function describeActionRejection(tool) {
   if (!tool) return 'Each action needs a "tool" name.';
   if (tool === BATCH_TOOL_NAME) return "browser_batch cannot be nested inside itself.";
   if (tool === "take_screenshot") {
@@ -63,7 +57,7 @@ function describeActionRejection(tool, isToolEnabled) {
   }
   // The same gate a standalone call would hit; enabling browser_batch must never
   // re-enable a tool the user switched off.
-  if (!isToolEnabled(tool)) {
+  if (!isBuiltInToolEnabled(tool)) {
     return `Tool "${tool}" is disabled in Margin Tool Access settings.`;
   }
   return "";
@@ -88,21 +82,23 @@ function describeActionResult(result, limit) {
     : safe;
 }
 
-function isFailure(result, parseResult) {
-  if (parseResult(result)?.ok === false) return true;
-  return typeof result === "string" && result.startsWith("Error:");
+async function runAction(tool, toolArgs) {
+  let result;
+  try {
+    result = await executeTool(tool, toolArgs);
+  } catch (err) {
+    result = {
+      ok: false,
+      tool,
+      error_code: "tool_threw",
+      recoverable: true,
+      message: err?.message || String(err)
+    };
+  }
+  return evaluateToolLoopGuard(tool, toolArgs, result) || result;
 }
 
-export async function executeBatchTool(args = {}, deps = {}) {
-  const {
-    runTool,
-    isToolEnabled = () => true,
-    guardCall = () => null,
-    evaluateGuard = () => null,
-    parseResult = defaultParseResult,
-    settle = defaultSettle
-  } = deps;
-
+export async function executeBatchTool(args = {}) {
   const actions = Array.isArray(args.actions) ? args.actions : null;
   if (!actions || actions.length === 0) {
     return batchError('browser_batch needs a non-empty "actions" array.');
@@ -125,7 +121,7 @@ export async function executeBatchTool(args = {}, deps = {}) {
       continue;
     }
 
-    const rejection = describeActionRejection(tool, isToolEnabled);
+    const rejection = describeActionRejection(tool);
     if (rejection) {
       results.push({ index, tool, status: "error", error: rejection });
       if (stopOnError) halted = `action ${index} (${tool || "unnamed"}) was rejected`;
@@ -134,7 +130,7 @@ export async function executeBatchTool(args = {}, deps = {}) {
 
     // Every action spends one call from the run's budget. Counting the batch as
     // a single call would make the user's maxToolCalls limit meaningless.
-    const guard = guardCall(tool);
+    const guard = guardToolCallBeforeExecution(tool);
     if (guard) {
       results.push({ index, tool, status: "error", error: guard.message || "Tool call limit reached." });
       halted = "the agent tool-call limit was reached";
@@ -142,15 +138,8 @@ export async function executeBatchTool(args = {}, deps = {}) {
     }
 
     const toolArgs = actionArguments(action);
-    let result;
-    try {
-      result = await runTool(tool, toolArgs);
-    } catch (err) {
-      result = `Error: ${err?.message || String(err)}`;
-    }
-    result = evaluateGuard(tool, toolArgs, result) || result;
-
-    const failed = isFailure(result, parseResult);
+    const result = await runAction(tool, toolArgs);
+    const failed = parseToolResultObject(result)?.ok === false;
     results.push({
       index,
       tool,
@@ -172,12 +161,9 @@ export async function executeBatchTool(args = {}, deps = {}) {
   const skipped = results.filter((entry) => entry.status === "skipped").length;
 
   let snapshot;
-  if (args.include_snapshot === true && succeeded > 0 && isToolEnabled("take_snapshot")) {
-    try {
-      snapshot = describeActionResult(await runTool("take_snapshot", {}), MAX_ACTION_RESULT_CHARS);
-    } catch (err) {
-      snapshot = `Error: ${err?.message || String(err)}`;
-    }
+  if (args.include_snapshot === true && succeeded > 0 && isBuiltInToolEnabled("take_snapshot")) {
+    const guard = guardToolCallBeforeExecution("take_snapshot");
+    snapshot = describeActionResult(guard || await runAction("take_snapshot", {}), MAX_ACTION_RESULT_CHARS);
   }
 
   return JSON.stringify({

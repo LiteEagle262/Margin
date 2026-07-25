@@ -7,14 +7,7 @@ import Link from "@mui/material/Link";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import GitHubIcon from "@mui/icons-material/GitHub";
-import {
-  CHROME_STORE_CONFIGURED,
-  CHROME_STORE_URL,
-  GITHUB_CONFIGURED,
-  GITHUB_URL,
-  NAV_LINKS,
-  PRIVACY_URL,
-} from "@/lib/constants";
+import { CHROME_STORE_URL, GITHUB_URL, NAV_LINKS, PRIVACY_URL } from "@/lib/constants";
 
 export default function Footer() {
   return (
@@ -30,7 +23,7 @@ export default function Footer() {
               Margin
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              AI-powered scraping in your browser side panel.
+              An AI browser agent in your Chrome side panel.
             </Typography>
           </Box>
 
@@ -40,14 +33,16 @@ export default function Footer() {
                 {link.label}
               </Link>
             ))}
-            {GITHUB_CONFIGURED && (
+            {GITHUB_URL && (
               <Link href={GITHUB_URL} target="_blank" rel="noopener noreferrer" color="text.secondary" underline="hover" variant="body2">
                 GitHub
               </Link>
             )}
-            <Link href={CHROME_STORE_URL} color="text.secondary" underline="hover" variant="body2">
-              {CHROME_STORE_CONFIGURED ? "Chrome Web Store" : "Release details"}
-            </Link>
+            {CHROME_STORE_URL && (
+              <Link href={CHROME_STORE_URL} color="text.secondary" underline="hover" variant="body2">
+                Chrome Web Store
+              </Link>
+            )}
             <Link href={PRIVACY_URL} color="text.secondary" underline="hover" variant="body2">
               Privacy
             </Link>
@@ -60,7 +55,7 @@ export default function Footer() {
           <Typography variant="caption" color="text.secondary">
             © {new Date().getFullYear()} Margin. Open source under MIT.
           </Typography>
-          {GITHUB_CONFIGURED && (
+          {GITHUB_URL && (
             <Link
               href={GITHUB_URL}
               target="_blank"

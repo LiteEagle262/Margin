@@ -1,9 +1,6 @@
 function runtimeRequest(message) {
   return new Promise((resolve, reject) => {
-    let settled = false;
     const finish = (response) => {
-      if (settled) return;
-      settled = true;
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
@@ -15,8 +12,7 @@ function runtimeRequest(message) {
       resolve(response.result ?? response);
     };
     try {
-      const request = chrome.runtime.sendMessage(message, finish);
-      if (request?.then) request.then(finish, reject);
+      chrome.runtime.sendMessage(message, finish);
     } catch (error) {
       reject(error);
     }

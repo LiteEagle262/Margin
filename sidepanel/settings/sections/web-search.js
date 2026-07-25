@@ -55,15 +55,13 @@ function initWebSearchSettings() {
   ];
   ids.forEach((id) => {
     const el = document.getElementById(id);
-    const syncWebSearchSettings = () => {
+    // Normalizing on "change" only: rendering on every keystroke rewrites the
+    // value under the cursor while the user is still typing it.
+    el?.addEventListener("change", () => {
       settings.webSearch = collectWebSearchFromUI();
       renderWebSearchSettings();
       renderToolAccessSettings();
-    };
-    el?.addEventListener("change", syncWebSearchSettings);
-    if (el?.tagName === "INPUT") {
-      el.addEventListener("input", syncWebSearchSettings);
-    }
+    });
   });
 }
 

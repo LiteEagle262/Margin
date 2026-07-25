@@ -115,7 +115,6 @@ export function initChatEvents() {
     chatTextarea.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (isAgentRunning) return;
         handleSendMessage();
       }
     });
@@ -140,7 +139,7 @@ export async function handleSendMessage() {
   const chatTextarea = document.getElementById("chat-textarea");
   const sendBtn = document.getElementById("send-btn");
 
-  if (!chatTextarea || !currentChatId) return;
+  if (!chatTextarea || !currentChatId || isAgentRunning) return;
 
   const userInput = chatTextarea.value.trim();
   if (!userInput && uploadedAttachments.length === 0) return;
@@ -151,42 +150,42 @@ export async function handleSendMessage() {
     return;
   }
 
-  if (settings.aiProvider === "openai") {
-    await refreshProviderBadge();
-  }
-  if (!isActiveProviderReady()) {
-    showToast(settings.aiProvider === "openai"
-      ? "Link your ChatGPT account first."
-      : `Add your ${getProviderLabel(settings.aiProvider)} key first.`);
-    switchView("settings");
-    return;
-  }
-
   const runChatId = currentChatId;
-  chatTextarea.value = "";
-  chatTextarea.style.height = "auto";
-  if (sendBtn) sendBtn.classList.remove("active");
-
-  const attachmentsToSend = [...uploadedAttachments];
-  setUploadedAttachments([]);
-  renderPreviewArea();
-
-  const activeChat = chats[runChatId];
-  activeChat.timestamp = Date.now();
-  
-  if (activeChat.messages.length === 0) {
-    activeChat.title = makeFallbackChatTitle(userInput);
-    activeChat.titleMode = "auto";
-    activeChat.titleGeneratedAt = null;
-  }
-
-  const messageIndex = activeChat.messages.push({ role: "user", content: userInput, attachments: attachmentsToSend }) - 1;
-  appendMessageUI("user", userInput, attachmentsToSend, true, { messageIndex });
-  await saveChats();
-  renderHistoryList();
-
   beginAgentRun(runChatId);
   try {
+    if (settings.aiProvider === "openai") {
+      await refreshProviderBadge();
+    }
+    if (!isActiveProviderReady()) {
+      showToast(settings.aiProvider === "openai"
+        ? "Link your ChatGPT account first."
+        : `Add your ${getProviderLabel(settings.aiProvider)} key first.`);
+      switchView("settings");
+      return;
+    }
+
+    chatTextarea.value = "";
+    chatTextarea.style.height = "auto";
+    if (sendBtn) sendBtn.classList.remove("active");
+
+    const attachmentsToSend = [...uploadedAttachments];
+    setUploadedAttachments([]);
+    renderPreviewArea();
+
+    const activeChat = chats[runChatId];
+    activeChat.timestamp = Date.now();
+
+    if (activeChat.messages.length === 0) {
+      activeChat.title = makeFallbackChatTitle(userInput);
+      activeChat.titleMode = "auto";
+      activeChat.titleGeneratedAt = null;
+    }
+
+    const messageIndex = activeChat.messages.push({ role: "user", content: userInput, attachments: attachmentsToSend }) - 1;
+    appendMessageUI("user", userInput, attachmentsToSend, true, { messageIndex });
+    await saveChats();
+    renderHistoryList();
+
     await runAgentCycle(runChatId);
   } finally {
     if (agentStopRequested) {

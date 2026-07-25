@@ -1,6 +1,7 @@
 import { settings } from "../../state/store.js";
 import { escapeHtml } from "../../lib/format.js";
 import { showToast } from "../../lib/toast.js";
+import { isSafeRecordKey } from "../../lib/safe-record.js";
 
 function normalizeAuthDomain(value) {
   const raw = String(value || "").trim().toLowerCase();
@@ -28,12 +29,15 @@ function normalizeAuthManualKey(value) {
 
 export function normalizeAuthManualKeys(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
-  return Object.entries(source).reduce((acc, [domain, key]) => {
+  const normalized = Object.create(null);
+  for (const [domain, key] of Object.entries(source)) {
     const normalizedDomain = normalizeAuthDomain(domain);
     const normalizedKey = normalizeAuthManualKey(key);
-    if (normalizedDomain && normalizedKey) acc[normalizedDomain] = normalizedKey;
-    return acc;
-  }, {});
+    if (isSafeRecordKey(normalizedDomain) && normalizedKey) {
+      normalized[normalizedDomain] = normalizedKey;
+    }
+  }
+  return normalized;
 }
 
 async function getCurrentTabDomain() {

@@ -377,12 +377,12 @@
               <option value="auto">Auto (load model details)</option>
             </select>
             <span class="help-text" id="reasoning-effort-help">Load or select a model to sync its reasoning options.</span>
-            <label class="mcp-bridge-toggle" id="reasoning-thinking-row">
+            <label class="mcp-bridge-toggle">
               <input type="checkbox" id="reasoning-show-thinking">
               Show returned model thinking in chat
             </label>
-            <span class="help-text" id="reasoning-thinking-help">Off by default. Shows the model's reasoning as collapsible "thinking" boxes inside the reply. Only models that return reasoning content produce them.</span>
-            <label class="mcp-bridge-toggle" id="reasoning-keep-open-row">
+            <span class="help-text">Off by default. Shows the model's reasoning as collapsible "thinking" boxes inside the reply. Only models that return reasoning content produce them.</span>
+            <label class="mcp-bridge-toggle">
               <input type="checkbox" id="reasoning-keep-open">
               Keep thinking boxes expanded by default
             </label>
@@ -458,29 +458,7 @@
               <pre id="mcp-bridge-config-snippet" class="mcp-bridge-snippet"></pre>
               <button type="button" id="copy-mcp-bridge-config-btn" class="text-btn">Copy MCP config</button>
             </details>
-            <span class="help-text">Run <code>npm install</code> in <code>mcp-server/</code>, then add the config above to your MCP client. Keep Chrome open with an active tab for autonomous testing.</span>
-          </div>
-
-          <div class="form-group mcp-bridge-section">
-            <div class="form-group-header">
-              <label>Temp Email Backend (optional)</label>
-              <span id="temp-email-status-badge" class="mcp-bridge-badge">Off</span>
-            </div>
-            <label class="mcp-bridge-toggle">
-              <input type="checkbox" id="temp-email-enabled">
-              Expose disposable-inbox tools (create_temp_email, wait_for_email, ...) to MCP clients
-            </label>
-            <div class="mcp-bridge-grid">
-              <div>
-                <label for="temp-email-api-url">Mail server URL</label>
-                <input type="text" id="temp-email-api-url" placeholder="https://mail.example.com">
-              </div>
-              <div>
-                <label for="temp-email-api-key">API key</label>
-                <input type="password" id="temp-email-api-key" placeholder="paste API_KEY from mail-server .env" autocomplete="off">
-              </div>
-            </div>
-            <span class="help-text">Off by default. Requires the <code>mail-server/</code> backend running and reachable. The toggle gates whether the AI sees these tools at all — disable it to lock the AI out of the inbox API.</span>
+            <span class="help-text">Add the config above to your MCP client &mdash; it runs the published server via <code>npx</code>, no checkout needed. Keep the Margin side panel open: browser tools run in the panel, so calls fail while it is closed.</span>
           </div>
 
           <div class="form-group mcp-bridge-section">

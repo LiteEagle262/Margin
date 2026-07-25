@@ -7,12 +7,12 @@ import {
   currentChatId,
   endAgentRunState,
   isAgentRunning,
-  mcpToolRegistry,
   requestAgentStop,
   settings,
 } from "../state/store.js";
 import { saveChats } from "../state/persistence.js";
 import { fetchProviderChatCompletion } from "../api/provider.js";
+import { parseMcpToolName } from "../api/mcp-client.js";
 import { buildReasoningPreferences } from "../settings/sections/reasoning.js";
 import { buildProviderPreferences } from "../settings/sections/provider-routing.js";
 import {
@@ -36,6 +36,8 @@ import {
   describeEmptyProviderResponse,
   MAX_OPENAI_CONTINUATION_TURNS,
 } from "./provider-response.js";
+
+const MCP_TOOL_RESULT_MAX_CHARS = 20000;
 
 function visibleChat(chatId) {
   return chatId && currentChatId === chatId;
@@ -83,13 +85,16 @@ export async function recordAgentStopped(chatId = activeAgentChatId || currentCh
   await saveChats();
 }
 
+let mcpRegistryAttempted = false;
+
 async function ensureMcpRegistry() {
-  if (mcpToolRegistry.size === 0 && settings.mcpServers.some((server) => server.enabled !== false && server.url)) {
-    await refreshMcpTools();
-  }
+  if (mcpRegistryAttempted) return;
+  if (!settings.mcpServers.some((server) => server.enabled !== false && server.url)) return;
+  mcpRegistryAttempted = true;
+  await refreshMcpTools();
 }
 
-function serializeToolResult(result) {
+function serializeToolResult(name, result) {
   if (result && typeof result === "object" && result.screenshot) {
     return { content: String(result.message || "Screenshot captured."), screenshot: result.screenshot };
   }
@@ -105,9 +110,25 @@ function serializeToolResult(result) {
       file: result,
     };
   }
-  return {
-    content: typeof result === "object" ? JSON.stringify(result, null, 2) : String(result),
-  };
+  const content = typeof result === "object" ? JSON.stringify(result, null, 2) : String(result);
+  if (parseMcpToolName(name) && content.length > MCP_TOOL_RESULT_MAX_CHARS) {
+    return {
+      content: `${content.slice(0, MCP_TOOL_RESULT_MAX_CHARS)}\n…truncated (${content.length} chars total)`,
+    };
+  }
+  return { content };
+}
+
+// Every tool_call must be answered or the next request is rejected by the provider.
+function cancelRemainingToolCalls(chat, pendingToolCalls) {
+  for (const toolCall of pendingToolCalls) {
+    chat.messages.push({
+      role: "tool",
+      tool_call_id: toolCall.id,
+      name: String(toolCall.function?.name || ""),
+      content: "Cancelled by user.",
+    });
+  }
 }
 
 async function runProviderCycle(chatId, chat, loading, disableTools, continuationTurns) {
@@ -200,10 +221,11 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
     throw new Error(describeEmptyProviderResponse(settings.aiProvider, response));
   }
 
+  const toolCalls = outcome.toolCalls;
   chat.messages.push({
     role: "assistant",
     content: response.content || "",
-    tool_calls: response.tool_calls,
+    tool_calls: toolCalls,
     ...(Array.isArray(response.openai_response_items)
       ? { openai_response_items: response.openai_response_items }
       : {}),
@@ -216,13 +238,23 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
 
   const screenshots = [];
   let toolLimitReached = false;
-  for (const toolCall of response.tool_calls) {
-    if (agentStopRequested) return;
+  for (let index = 0; index < toolCalls.length; index++) {
+    const toolCall = toolCalls[index];
+    if (agentStopRequested) {
+      cancelRemainingToolCalls(chat, toolCalls.slice(index));
+      await saveChats();
+      return;
+    }
     const name = String(toolCall.function?.name || "");
     let args = {};
+    let argsError = "";
     try {
-      args = JSON.parse(toolCall.function?.arguments || "{}");
-    } catch {}
+      const parsed = JSON.parse(toolCall.function?.arguments || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) args = parsed;
+      else argsError = "arguments must be a JSON object";
+    } catch (error) {
+      argsError = error.message;
+    }
 
     const callStatus = { stage: "call", name, args, ts: Date.now() };
     if (name !== "write_file") {
@@ -230,15 +262,36 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
       appendForChat(chatId, "tool-status", callStatus);
     }
 
-    let result = guardToolCallBeforeExecution(name);
-    if (result) {
-      toolLimitReached = true;
+    let result;
+    if (argsError) {
+      result = {
+        ok: false,
+        tool: name,
+        error_code: "invalid_tool_arguments",
+        recoverable: true,
+        message: `Could not read the arguments for "${name}": ${argsError}. Re-send the call with valid JSON arguments.`,
+      };
     } else {
-      result = await executeTool(name, args);
-      result = evaluateToolLoopGuard(name, args, result) || result;
+      result = guardToolCallBeforeExecution(name);
+      if (result) {
+        toolLimitReached = true;
+      } else {
+        try {
+          result = await executeTool(name, args);
+          result = evaluateToolLoopGuard(name, args, result) || result;
+        } catch (error) {
+          result = {
+            ok: false,
+            tool: name,
+            error_code: "tool_execution_failed",
+            recoverable: true,
+            message: `Tool "${name}" failed: ${error.message}`,
+          };
+        }
+      }
     }
 
-    const serialized = serializeToolResult(result);
+    const serialized = serializeToolResult(name, result);
     chat.messages.push({
       role: "tool",
       tool_call_id: toolCall.id,

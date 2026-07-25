@@ -10,7 +10,7 @@ import GitHubIcon from "@mui/icons-material/GitHub";
 import CodeIcon from "@mui/icons-material/Code";
 import GroupsIcon from "@mui/icons-material/Groups";
 import VerifiedIcon from "@mui/icons-material/Verified";
-import { DOCS_URL, GITHUB_CONFIGURED, GITHUB_URL } from "@/lib/constants";
+import { DOCS_URL, GITHUB_URL } from "@/lib/constants";
 
 const OSS_POINTS = [
   {
@@ -43,24 +43,28 @@ export default function OpenSource() {
               Built in the open. Reviewable end to end.
             </Typography>
             <Typography color="text.secondary" sx={{ mb: 3, lineHeight: 1.7 }}>
-              Margin is MIT licensed and ready for a public repository. Inspect how browser tools run, how files
+              Margin is MIT licensed. Inspect how browser tools run, how the MCP bridge authenticates, how files
               are stored locally, and how provider requests are made — then customize it for your workflow.
             </Typography>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button
-                href={GITHUB_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                variant="contained"
-                color="primary"
-                size="large"
-                startIcon={<GitHubIcon />}
-              >
-                {GITHUB_CONFIGURED ? "View repository" : "Repository URL coming with release"}
-              </Button>
-              <Button href={DOCS_URL} target="_blank" rel="noopener noreferrer" variant="outlined" color="inherit" size="large" sx={{ borderColor: "divider" }}>
-                Read docs
-              </Button>
+              {GITHUB_URL && (
+                <Button
+                  href={GITHUB_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  variant="contained"
+                  color="primary"
+                  size="large"
+                  startIcon={<GitHubIcon />}
+                >
+                  View repository
+                </Button>
+              )}
+              {DOCS_URL && (
+                <Button href={DOCS_URL} target="_blank" rel="noopener noreferrer" variant="outlined" color="inherit" size="large" sx={{ borderColor: "divider" }}>
+                  Read docs
+                </Button>
+              )}
             </Stack>
           </Grid>
 

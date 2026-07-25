@@ -6,7 +6,7 @@ const MAX_LOG_ENTRIES = 1500;
 const MAX_RETURNED_ENTRIES = 150;
 const MAX_BODY_LENGTH = 8000;
 const MAX_PERSISTED_BODY_LENGTH = 4000;
-const PERSIST_DEBOUNCE_MS = 500;
+const PERSIST_THROTTLE_MS = 2000;
 const MAX_WS_FRAMES = 100;
 const MAX_FRAME_LENGTH = 2000;
 
@@ -335,11 +335,11 @@ async function hydrateNetworkState() {
 
 function scheduleNetworkPersist() {
   if (!networkState.settings.persistSessionLogs) return;
-  if (networkState.persistTimer) clearTimeout(networkState.persistTimer);
+  if (networkState.persistTimer) return;
   networkState.persistTimer = setTimeout(() => {
     networkState.persistTimer = null;
     persistNetworkState();
-  }, PERSIST_DEBOUNCE_MS);
+  }, PERSIST_THROTTLE_MS);
 }
 
 async function persistNetworkState() {
@@ -879,13 +879,5 @@ export async function executeNetworkTool(name, args = {}, tabId) {
     return `Error executing network tool "${name}": ${err.message}`;
   }
 }
-
-const NETWORK_TOOL_NAMES = new Set([
-  "start_network_capture",
-  "stop_network_capture",
-  "get_network_logs",
-  "get_network_log_detail",
-  "clear_network_logs"
-]);
 
 hydrateNetworkState();

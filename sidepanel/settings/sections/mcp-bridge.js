@@ -2,6 +2,8 @@ import { settings } from "../../state/store.js";
 import { showToast } from "../../lib/toast.js";
 import { normalizeMcpBridgeSettings, DEFAULT_MCP_BRIDGE_PORT } from "../../../shared/settings-schema.js";
 
+let statusPollTimer = null;
+
 function buildMcpBridgeConfigSnippet(config) {
   const payload = {
     mcpServers: {
@@ -43,6 +45,20 @@ async function renderMcpBridgeSettings() {
   if (snippetEl) snippetEl.textContent = buildMcpBridgeConfigSnippet(settings.mcpBridge);
 
   refreshMcpBridgeStatus();
+  syncMcpBridgeStatusPolling();
+}
+
+// Each poll wakes the MV3 service worker, so only poll the badge the user can see.
+export function syncMcpBridgeStatusPolling() {
+  const settingsVisible = document.getElementById("settings-view")?.classList.contains("active") === true;
+  const shouldPoll = settingsVisible && settings.mcpBridge.enabled === true;
+
+  if (shouldPoll && !statusPollTimer) {
+    statusPollTimer = setInterval(refreshMcpBridgeStatus, 4000);
+  } else if (!shouldPoll && statusPollTimer) {
+    clearInterval(statusPollTimer);
+    statusPollTimer = null;
+  }
 }
 
 function collectMcpBridgeFromUI() {
@@ -108,6 +124,11 @@ function initMcpBridgeSettings() {
     el?.addEventListener("change", updateSnippet);
   });
 
+  enabledInput?.addEventListener("change", () => {
+    settings.mcpBridge = collectMcpBridgeFromUI();
+    syncMcpBridgeStatusPolling();
+  });
+
   copyTokenBtn?.addEventListener("click", async () => {
     const token = tokenInput?.value || "";
     if (!token) return;
@@ -145,7 +166,6 @@ function initMcpBridgeSettings() {
   });
 
   renderMcpBridgeSettings();
-  setInterval(refreshMcpBridgeStatus, 4000);
 }
 
 export const mcpBridgeSection = {

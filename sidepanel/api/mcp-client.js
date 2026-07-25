@@ -99,6 +99,10 @@ export async function mcpJsonRpcRequest(url, method, params = {}, sessionId = nu
     || payloads.find((item) => item?.result !== undefined || item?.error)
     || payloads[0];
 
+  if (!payload || typeof payload !== "object") {
+    throw new Error("MCP response did not contain a JSON-RPC payload.");
+  }
+
   if (payload.error) {
     throw new Error(payload.error.message || "MCP request failed");
   }
@@ -117,7 +121,7 @@ export async function connectMcpServer(server) {
   }, sessionId);
   sessionId = init.sessionId;
   const protocolVersion = String(init.result?.protocolVersion || MCP_PROTOCOL_VERSION);
-  negotiatedProtocolVersions.set(`${server.url}\n${sessionId || ""}`, protocolVersion);
+  negotiatedProtocolVersions.set(server.url, protocolVersion);
 
   await fetchWithTimeout(server.url, {
     method: "POST",
@@ -141,7 +145,7 @@ export async function connectMcpServer(server) {
 }
 
 export async function callMcpTool(server, sessionId, toolName, args) {
-  const protocolVersion = negotiatedProtocolVersions.get(`${server.url}\n${sessionId || ""}`) || MCP_PROTOCOL_VERSION;
+  const protocolVersion = negotiatedProtocolVersions.get(server.url) || MCP_PROTOCOL_VERSION;
   const resp = await mcpJsonRpcRequest(server.url, "tools/call", {
     name: toolName,
     arguments: args || {}

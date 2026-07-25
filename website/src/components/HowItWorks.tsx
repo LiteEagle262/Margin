@@ -24,7 +24,7 @@ export default function HowItWorks() {
           How it works
         </Typography>
         <Typography variant="h3" sx={{ mt: 1, mb: 5, maxWidth: 480 }}>
-          From install to working scraper in minutes
+          From install to a working agent in minutes
         </Typography>
 
         <Grid container spacing={4}>

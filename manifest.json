@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Margin",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "AI browser automation with OpenRouter or a linked ChatGPT account.",
   "minimum_chrome_version": "120",
   "permissions": [
     "sidePanel",
     "storage",
     "tabs",
-    "activeTab",
     "scripting",
     "debugger",
     "alarms",
