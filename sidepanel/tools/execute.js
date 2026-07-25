@@ -93,22 +93,33 @@ function toolFailure(tool, errorCode, message, recoverable = true) {
   return { ok: false, tool, error_code: errorCode, recoverable, message };
 }
 
-export async function executePageToolViaBackground(name, args = {}) {
+// If the service worker dies or the callback is lost, the run must not hang
+// forever. 120s matches the MCP bridge's own TOOL_TIMEOUT_MS; wait_for maxes
+// out at 60s.
+const BACKGROUND_TOOL_TIMEOUT_MS = 120000;
+
+export async function executePageToolViaBackground(name, args = {}, surface = "panel") {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: "page-tool", name, arguments: args }, (response) => {
-      if (chrome.runtime.lastError) {
-        resolve(toolFailure(name, "background_unavailable", chrome.runtime.lastError.message));
-        return;
-      }
-      if (!response) {
-        resolve(toolFailure(name, "no_response", "No response from background service worker."));
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      finish(toolFailure(name, "background_timeout", `No response from the background service worker after ${BACKGROUND_TOOL_TIMEOUT_MS / 1000}s.`));
+    }, BACKGROUND_TOOL_TIMEOUT_MS);
+    chrome.runtime.sendMessage({ type: "page-tool", name, arguments: args, surface }, (response) => {
+      if (chrome.runtime.lastError || !response) {
+        finish(toolFailure(name, "background_unreachable", chrome.runtime.lastError?.message || "No response from background service worker."));
         return;
       }
       if (response.ok === false) {
-        resolve(toolFailure(name, "tool_refused", String(response.result || `The background service worker refused "${name}".`), false));
+        finish(toolFailure(name, "tool_refused", String(response.result || `The background service worker refused "${name}".`), false));
         return;
       }
-      resolve(response.result);
+      finish(response.result);
     });
   });
 }
@@ -155,7 +166,7 @@ async function executeMcpTool(fullName, args) {
   }
 }
 
-export async function executeTool(name, args = {}) {
+export async function executeTool(name, args = {}, surface = "panel") {
   if (parseMcpToolName(name)) {
     return executeMcpTool(name, args);
   }
@@ -171,7 +182,7 @@ export async function executeTool(name, args = {}) {
   if (name === BATCH_TOOL_NAME) {
     // Actions re-enter here, so each one hits the same access gate, loop guards,
     // and dispatch a standalone call would.
-    return executeBatchTool(args);
+    return executeBatchTool(args, surface);
   }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
     return executeWorkspaceTool(name, args);
@@ -179,7 +190,7 @@ export async function executeTool(name, args = {}) {
   if (WEB_SEARCH_TOOL_NAMES.has(name)) {
     return executeWebSearchTool(name, args, settings.webSearch);
   }
-  return executePageToolViaBackground(name, args);
+  return executePageToolViaBackground(name, args, surface);
 }
 
 export function parseToolResultObject(result) {
@@ -264,7 +275,7 @@ globalThis.chrome?.runtime?.onMessage?.addListener((message, _sender, sendRespon
       // The call reaches every window's side panel; only the addressed one runs it.
       const panelWindow = await chrome.windows.getCurrent();
       if (panelWindow?.id !== message.targetWindowId) return;
-      const result = await executeTool(String(message.name || ""), message.arguments || {});
+      const result = await executeTool(String(message.name || ""), message.arguments || {}, "bridge");
       if (result && typeof result === "object" && result.screenshot) {
         const data = String(result.screenshot).replace(/^data:image\/[^;]+;base64,/, "");
         sendResponse({

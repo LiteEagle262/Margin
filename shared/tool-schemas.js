@@ -195,7 +195,7 @@ export const BROWSER_TOOLS = [
           selector: { type: "string", description: "CSS selector that should appear." },
           url_contains: { type: "string", description: "Substring expected in the current URL." },
           timeout: { type: "number", description: "Maximum wait time in milliseconds. Defaults to 8000." },
-          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to true on success." }
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false; set true to opt in." }
         }
       }
     }

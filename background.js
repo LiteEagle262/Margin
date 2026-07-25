@@ -1,5 +1,5 @@
 import { getActiveTabId, executePageTool, formatToolResultForMcp } from "./shared/browser-tools.js";
-import { executeNetworkTool, getNetworkLogSnapshot, syncNetworkAutoCapture } from "./shared/network-logs.js";
+import { getNetworkLogSnapshot, syncNetworkAutoCapture } from "./shared/network-logs.js";
 import {
   normalizeMcpBridgeSettings,
   DEFAULT_MCP_BRIDGE_PORT
@@ -16,6 +16,7 @@ import {
 } from "./background/openai-service.js";
 import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool, normalizeWebSearchSettings } from "./shared/tavily.js";
 import { MCP_PROXIED_TOOLS, toMcpToolSchema } from "./shared/tool-schemas.js";
+import { buildJournalEntry, appendJournalEntry } from "./shared/journal.js";
 import { BUILT_IN_TOOL_NAMES, DEFAULT_ENABLED_TOOLS } from "./sidepanel/settings/sections/tool-access.js";
 
 const RECONNECT_BASE_DELAY_MS = 3000;
@@ -251,24 +252,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "network-tool" && message.name) {
-    (async () => {
-      try {
-        await toolAccessReady;
-        if (!isStoredToolEnabled(message.name)) {
-          sendResponse({ ok: false, result: `Tool "${message.name}" is disabled in Margin settings.` });
-          return;
-        }
-        const tabId = await getActiveTabId();
-        const result = await executeNetworkTool(message.name, message.arguments || {}, tabId);
-        sendResponse({ ok: true, result });
-      } catch (err) {
-        sendResponse({ ok: false, result: err.message || String(err) });
-      }
-    })();
-    return true;
-  }
-
   if (message?.type === "network-logs/snapshot") {
     (async () => {
       try {
@@ -294,17 +277,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "panel/opened") {
+    bridgeBadgeCount = 0;
+    updateBridgeBadge();
+    return false;
+  }
+
   if (message?.type === "page-tool" && message.name) {
     (async () => {
+      const surface = message.surface === "bridge" ? "bridge" : "panel";
+      const args = message.arguments || {};
       try {
         await toolAccessReady;
         if (!isStoredToolEnabled(message.name)) {
+          recordToolJournalEntry({ surface, tool: message.name, args, outcome: "tool_disabled" });
           sendResponse({ ok: false, result: `Tool "${message.name}" is disabled in Margin settings.` });
           return;
         }
-        const result = await executePageTool(message.name, message.arguments || {});
+        const result = await executePageTool(message.name, args);
+        recordToolJournalEntry({ surface, tool: message.name, args, outcome: journalOutcome(result) });
         sendResponse({ ok: true, result });
       } catch (err) {
+        recordToolJournalEntry({ surface, tool: message.name, args, outcome: "error" });
         sendResponse({ ok: false, result: err.message || String(err) });
       }
     })();
@@ -313,6 +307,61 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   return false;
 });
+
+// --- Tool journal -----------------------------------------------------------
+// Fire-and-forget audit log in chrome.storage.local. Writes are chained so
+// concurrent tool calls cannot lose entries; callers never await the chain, so
+// tool latency is unchanged.
+
+let toolJournalWriteChain = Promise.resolve();
+let bridgeBadgeCount = 0;
+
+function recordToolJournalEntry({ surface, tool, args, outcome }) {
+  const ts = Date.now();
+  toolJournalWriteChain = toolJournalWriteChain.then(async () => {
+    const host = await resolveActiveTabHost();
+    const entry = buildJournalEntry({ ts, surface, tool, host, args, outcome });
+    const stored = await chrome.storage.local.get(["toolJournal"]);
+    await chrome.storage.local.set({ toolJournal: appendJournalEntry(stored.toolJournal, entry) });
+  }).catch(() => {});
+  if (surface === "bridge") {
+    bridgeBadgeCount += 1;
+    updateBridgeBadge();
+  }
+}
+
+async function resolveActiveTabHost() {
+  try {
+    const tabId = await getActiveTabId();
+    if (!tabId) return "";
+    const tab = await chrome.tabs.get(tabId);
+    return tab?.url ? new URL(tab.url).hostname : "";
+  } catch {
+    return "";
+  }
+}
+
+function updateBridgeBadge() {
+  const text = bridgeBadgeCount === 0 ? "" : bridgeBadgeCount > 99 ? "99+" : String(bridgeBadgeCount);
+  chrome.action.setBadgeText({ text }).catch(() => {});
+}
+
+// Tool results are either plain strings, structured failure objects, or JSON
+// strings of those objects; the journal only needs "ok" vs an error_code.
+function journalOutcome(result) {
+  let value = result;
+  if (typeof value === "string" && value.trimStart().startsWith("{")) {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return "ok";
+    }
+  }
+  if (value && typeof value === "object" && value.ok === false) {
+    return String(value.error_code || "error");
+  }
+  return "ok";
+}
 
 let mcpBridgeDefaultsPromise = null;
 
@@ -448,6 +497,20 @@ async function activePanelWindowId() {
   const focused = await chrome.windows.getLastFocused().catch(() => null);
   const active = panels.find((panel) => panel.windowId === focused?.id);
   return (active || panels[0]).windowId;
+}
+
+// Bridge web searches run entirely in the background, so this is the only
+// place they can be journaled — they never reach executePageTool.
+async function runBridgeWebSearch(message) {
+  const args = message.arguments || {};
+  try {
+    const result = await executeWebSearchTool(message.name, args, webSearchConfig);
+    recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: journalOutcome(result) });
+    return result;
+  } catch (err) {
+    recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: "error" });
+    throw err;
+  }
 }
 
 async function requestMcpToolFromPanel(message) {
@@ -614,7 +677,7 @@ function connectBridge() {
       }
       try {
         const formatted = WEB_SEARCH_TOOL_NAMES.has(message.name)
-          ? formatToolResultForMcp(await executeWebSearchTool(message.name, message.arguments || {}, webSearchConfig))
+          ? formatToolResultForMcp(await runBridgeWebSearch(message))
           : await requestMcpToolFromPanel(message);
         socket.send(JSON.stringify({
           type: "tool/result",
