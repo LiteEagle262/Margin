@@ -7,6 +7,7 @@ import { DEFAULT_SYSTEM_PROMPT } from "../agent/context.js";
 import { AI_PROVIDERS, getProviderDefinition, normalizeProviderId } from "../api/provider.js";
 import { syncModelPickerValue, updateModelBadge, refreshProviderBadge } from "../ui/model-picker.js";
 import { refreshMcpTools } from "../tools/execute.js";
+import { BUILT_IN_TOOL_NAMES } from "./sections/tool-access.js";
 
 const CONFIG_EXPORT_VERSION = 5;
 const AUTOSAVE_DELAY_MS = 350;
@@ -62,11 +63,16 @@ export async function loadSettings() {
     const result = await readStoredSettings();
     setSettings(normalizeAppConfig(result));
     const storageObject = buildSettingsStorageObject(settings);
+    // The MCP bridge reads the raw stored allowlist, so a tool added in a later
+    // version stays invisible there until the map is rewritten with its default.
+    const storedToolAccess = result.toolAccess?.enabled;
+    const needsToolAccessMigration = !result.toolAccess ||
+      [...BUILT_IN_TOOL_NAMES].some((name) => !Object.hasOwn(storedToolAccess || {}, name));
     const needsProviderMigration = !result.providerConfigs ||
       String(result.apiKey || "").trim() !== "" ||
       String(result.customModel || "").trim() !== "" ||
       String(result.providerConfigs?.openai?.apiKey || "").trim() !== "" ||
-      !result.toolAccess;
+      needsToolAccessMigration;
     if (needsProviderMigration) {
       await writeStoredSettings(storageObject);
     }

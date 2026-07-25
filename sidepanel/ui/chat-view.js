@@ -452,6 +452,26 @@ async function commitMessageEdit(messageIndex, nextContent) {
 }
 
 export function sanitizeToolDisplay(name, args, result) {
+  if (name === "browser_batch") {
+    // One status row for the whole batch: list the actions, not their payloads.
+    const actions = Array.isArray(args?.actions) ? args.actions : [];
+    let summary = result;
+    try {
+      const parsed = typeof result === "string" ? JSON.parse(result) : result;
+      if (Array.isArray(parsed?.results)) {
+        summary = [
+          parsed.summary,
+          ...(parsed.stopped_early ? [`stopped early: ${parsed.stopped_early}`] : []),
+          ...parsed.results.map((entry) =>
+            `${entry.index + 1}. ${entry.tool || "?"} — ${entry.status}${entry.error ? `: ${entry.error}` : ""}`)
+        ].join("\n");
+      }
+    } catch {}
+    return {
+      args: actions.length ? { actions: actions.map((action) => action?.tool || "?") } : undefined,
+      result: summary
+    };
+  }
   if (name === "write_file") {
     const lineCount = args?.content ? String(args.content).split("\n").length : undefined;
     return {
@@ -619,6 +639,10 @@ function updateActivityTime(group) {
 
 function buildToolSummary(name, args, result, stage) {
   if (stage === "call" && (result === undefined || result === null || result === "")) {
+    if (name === "browser_batch") {
+      const count = Array.isArray(args?.actions) ? args.actions.length : 0;
+      return count ? `${count} actions` : "batching…";
+    }
     if (name === "click_element") return args?.selector ? `→ ${args.selector}` : "clicking…";
     if (name === "navigate") return args?.url ? `→ ${args.url}` : "navigating…";
     if (name === "type_text") return args?.selector ? `into ${args.selector}` : "typing…";

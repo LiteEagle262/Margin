@@ -1,10 +1,11 @@
 import { settings, mcpToolRegistry, mcpConnections, activeToolRunStats } from "../state/store.js";
 import { mcpToolName, parseMcpToolName, connectMcpServer, callMcpTool } from "../api/mcp-client.js";
 import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool } from "../../shared/tavily.js";
-import { BROWSER_TOOLS, WORKSPACE_TOOLS, WORKSPACE_TOOL_NAMES, WEB_SEARCH_TOOLS, RECON_TOOLS } from "./schemas.js";
+import { BROWSER_TOOLS, WORKSPACE_TOOLS, WORKSPACE_TOOL_NAMES, WEB_SEARCH_TOOLS, RECON_TOOLS } from "../../shared/tool-schemas.js";
 import { BUILT_IN_TOOL_NAMES, isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
 import { getMaxToolCalls } from "../settings/sections/agent-limits.js";
 import { executeWorkspaceTool } from "../features/workspace.js";
+import { BATCH_TOOL_NAME, executeBatchTool } from "./batch.js";
 
 const TOOL_LOOP_LIMITS = {
   sameFailure: 2,
@@ -163,6 +164,17 @@ export async function executeTool(name, args = {}) {
       recoverable: false,
       message: `Tool "${name}" is disabled in Margin Tool Access settings.`
     }, null, 2);
+  }
+  if (name === BATCH_TOOL_NAME) {
+    // Actions re-enter here, so each one hits the same access gate, loop guards,
+    // and dispatch a standalone call would.
+    return executeBatchTool(args, {
+      runTool: executeTool,
+      isToolEnabled: isBuiltInToolEnabled,
+      guardCall: guardToolCallBeforeExecution,
+      evaluateGuard: evaluateToolLoopGuard,
+      parseResult: parseToolResultObject
+    });
   }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
     return executeWorkspaceTool(name, args);
