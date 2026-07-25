@@ -47,7 +47,8 @@ function setOpenRouterBalanceBadge(text, { state = "", title = "OpenRouter balan
   const badge = document.getElementById("openrouter-balance-badge");
   if (!badge) return;
 
-  badge.textContent = text;
+  // The session line renders its own accent "bal" key, mirroring the "model" key.
+  badge.textContent = text.replace(/^Balance\s*/, "");
   badge.title = title;
   badge.setAttribute("aria-label", title);
   badge.classList.toggle("active", state === "active");
@@ -58,9 +59,11 @@ function setOpenRouterBalanceBadge(text, { state = "", title = "OpenRouter balan
 export async function refreshProviderBadge() {
   const requestId = ++openRouterBalanceRequestId;
   const badge = document.getElementById("openrouter-balance-badge");
+  const reloadBtn = document.getElementById("reload-balance-btn");
 
   if (settings.aiProvider !== "openrouter") {
     badge?.classList.add("hidden");
+    reloadBtn?.classList.add("hidden");
     try {
       const status = await getOpenAIAuthStatus();
       openAIProviderReady = status.linked === true;
@@ -72,6 +75,7 @@ export async function refreshProviderBadge() {
   }
   openAIProviderReady = false;
   badge?.classList.remove("hidden");
+  reloadBtn?.classList.remove("hidden");
 
   if (!settings.dataSharingConsent) {
     setOpenRouterBalanceBadge("Consent required", {

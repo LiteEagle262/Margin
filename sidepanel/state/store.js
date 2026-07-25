@@ -77,7 +77,12 @@ export let settings = {
     maxToolCalls: 14,
     fallbackContextWindow: 128000
   },
-  authManualKeys: {}
+  authManualKeys: {},
+  appearance: {
+    hue: 348,
+    saturation: 58,
+    lightness: 50
+  }
 };
 
 export function setSettings(next) {

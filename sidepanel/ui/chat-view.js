@@ -23,6 +23,8 @@ export async function setThinkingOpenDefault(keepThinkingOpen) {
       keepThinkingOpen
     }
   });
+  const keepOpenInput = document.getElementById("reasoning-keep-open");
+  if (keepOpenInput) keepOpenInput.checked = keepThinkingOpen;
   renderChatHistory();
 }
 
@@ -44,14 +46,27 @@ export function renderChatHistory() {
   const activeChat = chats[currentChatId];
   if (activeChat && activeChat.messages) {
     activeChat.messages.forEach((msg, index) => {
-      if (msg.role === "user" || msg.role === "assistant") {
-        appendMessageUI(msg.role, msg.content, getDisplayAttachments(msg), false, { messageIndex: index });
-      } else if (msg.role === "tool-status") {
-        appendMessageUI("tool-status", msg.content, [], false);
-      } else if (msg.role === "file-artifact") {
-        appendMessageUI("file-artifact", msg.content, [], false);
-      } else if (msg.role === "reasoning") {
-        appendMessageUI("reasoning", msg.content, [], false);
+      try {
+        if (msg.role === "user" || msg.role === "assistant") {
+          // Tool-call carrier messages with no text render as empty cards that
+          // split the trace into separate boxes — skip them like the live run does.
+          const attachments = getDisplayAttachments(msg);
+          if (msg.role === "assistant" && !String(msg.content || "").trim() && attachments.length === 0) return;
+          appendMessageUI(msg.role, msg.content, attachments, false, { messageIndex: index });
+        } else if (msg.role === "tool-status") {
+          appendMessageUI("tool-status", msg.content, [], false);
+        } else if (msg.role === "file-artifact") {
+          appendMessageUI("file-artifact", msg.content, [], false);
+        } else if (msg.role === "reasoning") {
+          // Thinking tabs render only while the setting is enabled; stored
+          // reasoning stays in the chat data and reappears if re-enabled.
+          if (normalizeReasoningSettings(settings.reasoning).showThinking) {
+            appendMessageUI("reasoning", msg.content, [], false);
+          }
+        }
+      } catch (err) {
+        // One corrupt message must not blank the rest of the transcript.
+        console.error(`Could not render message ${index} (role: ${msg?.role}):`, err, msg);
       }
     });
   }
@@ -82,8 +97,39 @@ export function appendMessageUI(role, content, attachments = [], shouldScroll = 
   if (role === "tool-status") {
     const group = ensureActivityGroup(chatHistory);
     const body = group.querySelector(".activity-group-body");
-    body.appendChild(renderToolStatus(content));
-    updateActivityCount(group);
+    const card = renderToolStatus(content);
+    if (content && typeof content === "object") recordActivityTimestamp(group, Number(content.ts));
+    // One line per tool, like the design: a result upgrades its call line
+    // in place (carrying the arguments over) instead of adding a second row.
+    const last = body.lastElementChild;
+    if (
+      card.classList.contains("stage-result") &&
+      last &&
+      last.classList.contains("stage-call") &&
+      last.dataset.toolName === card.dataset.toolName
+    ) {
+      const argsField = last.querySelector(".tool-card-body .tool-field");
+      if (argsField) {
+        let cardBody = card.querySelector(".tool-card-body");
+        if (!cardBody) {
+          cardBody = document.createElement("div");
+          cardBody.className = "tool-card-body hidden";
+          card.appendChild(cardBody);
+        }
+        cardBody.insertBefore(argsField, cardBody.firstChild);
+      }
+      if (group.classList.contains("all-expanded")) {
+        const cardBody = card.querySelector(".tool-card-body");
+        if (cardBody) {
+          cardBody.classList.remove("hidden");
+          card.classList.add("expanded");
+        }
+      }
+      body.replaceChild(card, last);
+    } else {
+      body.appendChild(card);
+    }
+    updateActivityTime(group);
     if (shouldScroll) {
       chatHistory.scrollTop = chatHistory.scrollHeight;
       updateUsageBar();
@@ -159,7 +205,73 @@ export function appendMessageUI(role, content, attachments = [], shouldScroll = 
   textParagraph.className = "markdown message-text";
   textParagraph.innerHTML = formatMarkdown(content);
   contentDiv.appendChild(textParagraph);
-  
+
+  if (role === "assistant") {
+    // Fold the tool trace and file cards produced during this turn into the
+    // reply card so trace, text, and files render as one unified block.
+    const absorbed = [];
+    let prev = chatHistory.lastElementChild;
+    while (
+      prev &&
+      (prev.classList.contains("tool-activity-group") ||
+        prev.classList.contains("file-artifact-msg") ||
+        prev.classList.contains("reasoning-msg"))
+    ) {
+      absorbed.unshift(prev);
+      prev = prev.previousElementSibling;
+    }
+    let lastTrace = null;
+    for (const el of absorbed) {
+      if (el.classList.contains("tool-activity-group")) {
+        if (lastTrace) {
+          // Adjacent trace boxes collapse into one, like the design.
+          const targetBody = lastTrace.querySelector(".activity-group-body");
+          const sourceBody = el.querySelector(".activity-group-body");
+          while (targetBody && sourceBody && sourceBody.firstElementChild) {
+            targetBody.appendChild(sourceBody.firstElementChild);
+          }
+          recordActivityTimestamp(lastTrace, Number(el.dataset.firstTs));
+          recordActivityTimestamp(lastTrace, Number(el.dataset.lastTs));
+          updateActivityTime(lastTrace);
+          el.remove();
+        } else {
+          el.classList.remove("message");
+          contentDiv.insertBefore(el, textParagraph);
+          lastTrace = el;
+        }
+      } else if (el.classList.contains("reasoning-msg")) {
+        const card = el.querySelector(".reasoning-card");
+        if (card) contentDiv.insertBefore(card, textParagraph);
+        el.remove();
+        lastTrace = null;
+      } else {
+        const card = el.querySelector(".file-artifact");
+        if (card) contentDiv.appendChild(card);
+        el.remove();
+      }
+    }
+
+    // "N tools · done" on the blob's tab strip; totals accumulate on the
+    // leading segment when a multi-phase turn fuses into one card.
+    const toolCount = contentDiv.querySelectorAll(".tool-activity-group .tool-card").length;
+    let leaderContent = contentDiv;
+    let leader = prev;
+    while (
+      leader &&
+      leader.classList.contains("assistant") &&
+      !leader.classList.contains("loading-msg")
+    ) {
+      const candidate = leader.querySelector(".message-content:not(.reasoning-card)");
+      if (candidate) leaderContent = candidate;
+      leader = leader.previousElementSibling;
+    }
+    const totalTools = Number(leaderContent.dataset.toolsTotal || 0) + toolCount;
+    if (totalTools > 0) {
+      leaderContent.dataset.toolsTotal = String(totalTools);
+      leaderContent.dataset.tabMeta = `${totalTools} tool${totalTools === 1 ? "" : "s"} · done`;
+    }
+  }
+
   msgDiv.appendChild(contentDiv);
   
   const metaDiv = document.createElement("div");
@@ -340,6 +452,26 @@ async function commitMessageEdit(messageIndex, nextContent) {
 }
 
 export function sanitizeToolDisplay(name, args, result) {
+  if (name === "browser_batch") {
+    // One status row for the whole batch: list the actions, not their payloads.
+    const actions = Array.isArray(args?.actions) ? args.actions : [];
+    let summary = result;
+    try {
+      const parsed = typeof result === "string" ? JSON.parse(result) : result;
+      if (Array.isArray(parsed?.results)) {
+        summary = [
+          parsed.summary,
+          ...(parsed.stopped_early ? [`stopped early: ${parsed.stopped_early}`] : []),
+          ...parsed.results.map((entry) =>
+            `${entry.index + 1}. ${entry.tool || "?"} — ${entry.status}${entry.error ? `: ${entry.error}` : ""}`)
+        ].join("\n");
+      }
+    } catch {}
+    return {
+      args: actions.length ? { actions: actions.map((action) => action?.tool || "?") } : undefined,
+      result: summary
+    };
+  }
   if (name === "write_file") {
     const lineCount = args?.content ? String(args.content).split("\n").length : undefined;
     return {
@@ -462,28 +594,25 @@ function ensureActivityGroup(chatHistory) {
   group.className = "message tool-activity-group";
   group.innerHTML = `
     <div class="activity-group-header">
-      <span class="activity-group-title">
-        <span class="activity-dot"></span>
-        <span class="activity-count">1 step</span>
-      </span>
-      <button type="button" class="activity-expand-btn" aria-expanded="false">Show details</button>
+      <button type="button" class="activity-toggle" aria-expanded="false" title="Show tool details">
+        <span class="activity-arrow" aria-hidden="true">&#9656;</span>
+        <span class="activity-label">trace</span>
+      </button>
+      <span class="activity-time"></span>
     </div>
     <div class="activity-group-body"></div>
   `;
 
-  const expandBtn = group.querySelector(".activity-expand-btn");
-  expandBtn.addEventListener("click", () => {
+  const toggle = group.querySelector(".activity-toggle");
+  toggle.addEventListener("click", () => {
     const allExpanded = !group.classList.contains("all-expanded");
     group.classList.toggle("all-expanded", allExpanded);
-    expandBtn.textContent = allExpanded ? "Hide details" : "Show details";
-    expandBtn.setAttribute("aria-expanded", allExpanded ? "true" : "false");
+    toggle.setAttribute("aria-expanded", allExpanded ? "true" : "false");
     group.querySelectorAll(".tool-card").forEach(card => {
       const body = card.querySelector(".tool-card-body");
-      const summary = card.querySelector(".tool-card-summary");
       if (!body) return;
       body.classList.toggle("hidden", !allExpanded);
       card.classList.toggle("expanded", allExpanded);
-      if (summary) summary.setAttribute("aria-expanded", allExpanded ? "true" : "false");
     });
   });
 
@@ -491,14 +620,29 @@ function ensureActivityGroup(chatHistory) {
   return group;
 }
 
-function updateActivityCount(group) {
-  const count = group.querySelectorAll(".tool-card").length;
-  const countEl = group.querySelector(".activity-count");
-  if (countEl) countEl.textContent = count === 1 ? "1 step" : `${count} steps`;
+function recordActivityTimestamp(group, ts) {
+  if (!Number.isFinite(ts)) return;
+  const first = Number(group.dataset.firstTs || 0);
+  const last = Number(group.dataset.lastTs || 0);
+  if (!first || ts < first) group.dataset.firstTs = String(ts);
+  if (!last || ts > last) group.dataset.lastTs = String(ts);
+}
+
+function updateActivityTime(group) {
+  const timeEl = group.querySelector(".activity-time");
+  if (!timeEl) return;
+  const first = Number(group.dataset.firstTs || 0);
+  const last = Number(group.dataset.lastTs || 0);
+  const secs = first && last ? (last - first) / 1000 : 0;
+  timeEl.textContent = secs >= 0.1 ? `${secs.toFixed(1)}s` : "";
 }
 
 function buildToolSummary(name, args, result, stage) {
   if (stage === "call" && (result === undefined || result === null || result === "")) {
+    if (name === "browser_batch") {
+      const count = Array.isArray(args?.actions) ? args.actions.length : 0;
+      return count ? `${count} actions` : "batching…";
+    }
     if (name === "click_element") return args?.selector ? `→ ${args.selector}` : "clicking…";
     if (name === "navigate") return args?.url ? `→ ${args.url}` : "navigating…";
     if (name === "type_text") return args?.selector ? `into ${args.selector}` : "typing…";
@@ -521,14 +665,17 @@ function buildToolSummary(name, args, result, stage) {
     return "running";
   }
 
-  if (typeof result === "string") {
-    const oneLine = result.replace(/\s+/g, " ").trim();
-    if (!oneLine) return "done";
-    return oneLine.length > 72 ? oneLine.slice(0, 72) + "…" : oneLine;
-  }
+  const SUMMARY_MAX = 44;
+  const shorten = (text) => {
+    const oneLine = String(text).replace(/\s+/g, " ").trim();
+    if (!oneLine || oneLine === "undefined") return "done";
+    return oneLine.length > SUMMARY_MAX ? oneLine.slice(0, SUMMARY_MAX).trimEnd() + "…" : oneLine;
+  };
+
+  if (typeof result === "string") return shorten(result);
   if (result && typeof result === "object") {
     if (typeof result.lines === "number") return `${result.lines} lines`;
-    if (typeof result.path === "string") return result.path;
+    if (typeof result.path === "string") return shorten(result.path);
     if (Array.isArray(result)) return `${result.length} items`;
     const keys = Object.keys(result);
     if (keys.length) return keys.slice(0, 3).join(", ");
@@ -553,34 +700,19 @@ function renderToolStatus(content) {
 
   const card = document.createElement("div");
   card.className = `tool-card stage-${escapeHtml(stage)}${hasBody ? "" : " no-body"}`;
+  card.dataset.toolName = details.name || "browser_tool";
   card.innerHTML = `
-    <button type="button" class="tool-card-summary" aria-expanded="false"${hasBody ? "" : " disabled"}>
+    <div class="tool-card-summary">
       <span class="tool-status-dot" data-stage="${escapeHtml(stage)}" aria-hidden="true"></span>
       <span class="tool-name-compact">${safeName}</span>
       ${summaryLine ? `<span class="tool-summary-text">${escapeHtml(summaryLine)}</span>` : ""}
-      ${hasBody ? `
-        <span class="tool-chevron" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </span>` : ""}
-    </button>
+    </div>
     ${hasBody ? `
       <div class="tool-card-body hidden">
         ${argsText ? `<div class="tool-field"><span class="tool-label">Arguments</span><pre class="tool-value">${escapeHtml(argsText)}</pre></div>` : ""}
         ${resultText ? `<div class="tool-field"><span class="tool-label">Result</span><pre class="tool-value">${escapeHtml(resultText)}</pre></div>` : ""}
       </div>` : ""}
   `;
-
-  const summary = card.querySelector(".tool-card-summary");
-  const body = card.querySelector(".tool-card-body");
-  if (summary && body) {
-    summary.addEventListener("click", () => {
-      const expanded = body.classList.toggle("hidden") === false;
-      card.classList.toggle("expanded", expanded);
-      summary.setAttribute("aria-expanded", expanded ? "true" : "false");
-    });
-  }
 
   return card;
 }
@@ -645,16 +777,12 @@ function renderReasoningDisclosure(content) {
   wrapper.innerHTML = `
     <div class="reasoning-header">
       <button type="button" class="reasoning-toggle" aria-expanded="${expandedByDefault ? "true" : "false"}">
-        <span class="reasoning-title">Thinking</span>
-        <span class="reasoning-meta">${escapeHtml(formatTokens(approxTokens(text)))}</span>
-        <span class="reasoning-chevron" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </span>
+        <span class="reasoning-arrow" aria-hidden="true">&#9656;</span>
+        <span class="reasoning-title">thinking</span>
+        <span class="reasoning-meta">${escapeHtml(formatTokens(approxTokens(text)))} tok</span>
       </button>
       <button type="button" class="reasoning-all-action" data-action="${expandedByDefault ? "close" : "open"}">
-        ${expandedByDefault ? "Close all" : "Open all"}
+        ${expandedByDefault ? "close all" : "open all"}
       </button>
     </div>
     <div class="reasoning-body${expandedByDefault ? "" : " hidden"}">
@@ -672,7 +800,7 @@ function renderReasoningDisclosure(content) {
       toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
       if (action) {
         action.dataset.action = expanded ? "close" : "open";
-        action.textContent = expanded ? "Close all" : "Open all";
+        action.textContent = expanded ? "close all" : "open all";
       }
     });
   }

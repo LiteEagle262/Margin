@@ -16,6 +16,7 @@ import {
   startOpenAIDeviceAuthorization
 } from "./background/openai-service.js";
 import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool, normalizeWebSearchSettings } from "./shared/tavily.js";
+import { MCP_PROXIED_TOOLS, toMcpToolSchema } from "./shared/tool-schemas.js";
 
 const RECONNECT_DELAY_MS = 3000;
 const KEEPALIVE_ALARM = "margin-bridge-keepalive";
@@ -386,12 +387,21 @@ async function syncNetworkAutoCaptureFromStorage() {
   }
 }
 
+// The bridge server keeps no tool definitions of its own, so the extension is
+// the single source of truth for what MCP clients can see and call.
+function buildBridgeToolSchemas() {
+  return MCP_PROXIED_TOOLS
+    .filter((tool) => isStoredToolEnabled(tool.function?.name))
+    .map(toMcpToolSchema);
+}
+
 function sendFeatureFlagsToBridge() {
   if (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN) return;
   try {
     bridgeSocket.send(JSON.stringify({
       type: "feature-flags/set",
       flags: {
+        tools: buildBridgeToolSchemas(),
         tempEmail: {
           enabled: tempEmailConfig.enabled === true,
           apiUrl: tempEmailConfig.apiUrl || "",

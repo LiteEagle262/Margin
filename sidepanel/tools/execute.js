@@ -1,43 +1,17 @@
 import { settings, mcpToolRegistry, mcpConnections, activeToolRunStats } from "../state/store.js";
 import { mcpToolName, parseMcpToolName, connectMcpServer, callMcpTool } from "../api/mcp-client.js";
 import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool } from "../../shared/tavily.js";
-import { BROWSER_TOOLS, WORKSPACE_TOOLS, WORKSPACE_TOOL_NAMES, WEB_SEARCH_TOOLS, RECON_TOOLS } from "./schemas.js";
+import { BROWSER_TOOLS, WORKSPACE_TOOLS, WORKSPACE_TOOL_NAMES, WEB_SEARCH_TOOLS, RECON_TOOLS } from "../../shared/tool-schemas.js";
 import { BUILT_IN_TOOL_NAMES, isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
 import { getMaxToolCalls } from "../settings/sections/agent-limits.js";
 import { executeWorkspaceTool } from "../features/workspace.js";
+import { BATCH_TOOL_NAME, executeBatchTool } from "./batch.js";
 
 const TOOL_LOOP_LIMITS = {
   sameFailure: 2,
   repeatedReadOnly: 3
 };
 let mcpRefreshGeneration = 0;
-
-const CONFIRM_EACH_USE_TOOLS = new Set([
-  "clear_network_logs",
-  "delete_file",
-  "evaluate_script",
-  "get_authenticator_code",
-  "get_cookies",
-  "get_network_log_detail",
-  "get_network_logs",
-  "get_storage",
-  "http_request",
-  "list_authenticator_domains",
-  "list_scripts",
-  "rename_file",
-  "run_js",
-  "search_scripts",
-  "start_network_capture",
-  "stop_network_capture",
-  "take_screenshot",
-]);
-
-function confirmSensitiveToolUse(name) {
-  if (!CONFIRM_EACH_USE_TOOLS.has(name)) return true;
-  return confirm(`Margin wants to run the sensitive tool “${name}”. Allow this one use?`);
-}
-
-
 
 export async function refreshMcpTools() {
   const generation = ++mcpRefreshGeneration;
@@ -191,14 +165,16 @@ export async function executeTool(name, args = {}) {
       message: `Tool "${name}" is disabled in Margin Tool Access settings.`
     }, null, 2);
   }
-  if (!confirmSensitiveToolUse(name)) {
-    return JSON.stringify({
-      ok: false,
-      tool: name,
-      error_code: "user_denied",
-      recoverable: false,
-      message: `The user declined the sensitive tool "${name}".`,
-    }, null, 2);
+  if (name === BATCH_TOOL_NAME) {
+    // Actions re-enter here, so each one hits the same access gate, loop guards,
+    // and dispatch a standalone call would.
+    return executeBatchTool(args, {
+      runTool: executeTool,
+      isToolEnabled: isBuiltInToolEnabled,
+      guardCall: guardToolCallBeforeExecution,
+      evaluateGuard: evaluateToolLoopGuard,
+      parseResult: parseToolResultObject
+    });
   }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
     return executeWorkspaceTool(name, args);
