@@ -9,15 +9,6 @@ export function normalizeMcpBridgeSettings(raw) {
   };
 }
 
-export function normalizeTempEmailSettings(raw) {
-  const value = raw && typeof raw === "object" ? raw : {};
-  return {
-    enabled: value.enabled === true,
-    apiUrl: typeof value.apiUrl === "string" ? value.apiUrl.trim() : "",
-    apiKey: typeof value.apiKey === "string" ? value.apiKey : ""
-  };
-}
-
 export function normalizeNetworkCaptureSettings(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
   return {

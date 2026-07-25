@@ -162,16 +162,7 @@ export function normalizeOpenAIModelsResponse(payload) {
   return models.map(({ model }, index) => ({ ...model, isDefault: index === 0 }));
 }
 
-export const OPENAI_SUBSCRIPTION_MODELS = Object.freeze(
-  normalizeOpenAIModelsResponse(FALLBACK_MODEL_CATALOG).map((model) => Object.freeze({
-    ...model,
-    architecture: Object.freeze({
-      input_modalities: Object.freeze([...model.architecture.input_modalities]),
-    }),
-    supported_parameters: Object.freeze([...model.supported_parameters]),
-    supported_reasoning_levels: Object.freeze(model.supported_reasoning_levels.map((level) => Object.freeze({ ...level }))),
-  })),
-);
+export const OPENAI_SUBSCRIPTION_MODELS = normalizeOpenAIModelsResponse(FALLBACK_MODEL_CATALOG);
 
 function decodeBase64Url(value) {
   const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");

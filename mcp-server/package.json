@@ -1,6 +1,6 @@
 {
   "name": "margin-mcp-server",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "MCP server that exposes Margin browser automation tools to Claude Code, Codex, Cursor, and other MCP clients.",
   "type": "module",
   "main": "index.js",
@@ -9,7 +9,6 @@
   },
   "files": [
     "index.js",
-    "temp-email.js",
     "web-search.js",
     "README.md"
   ],
@@ -29,7 +28,7 @@
   ],
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check temp-email.js",
+    "check": "node --check index.js && node --check web-search.js",
     "test": "node --test"
   },
   "engines": {

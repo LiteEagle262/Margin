@@ -2,7 +2,6 @@ import { getActiveTabId, executePageTool, formatToolResultForMcp } from "./share
 import { executeNetworkTool, getNetworkLogSnapshot, syncNetworkAutoCapture } from "./shared/network-logs.js";
 import {
   normalizeMcpBridgeSettings,
-  normalizeTempEmailSettings,
   DEFAULT_MCP_BRIDGE_PORT
 } from "./shared/settings-schema.js";
 import {
@@ -17,9 +16,13 @@ import {
 } from "./background/openai-service.js";
 import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool, normalizeWebSearchSettings } from "./shared/tavily.js";
 import { MCP_PROXIED_TOOLS, toMcpToolSchema } from "./shared/tool-schemas.js";
+import { BUILT_IN_TOOL_NAMES, DEFAULT_ENABLED_TOOLS } from "./sidepanel/settings/sections/tool-access.js";
 
-const RECONNECT_DELAY_MS = 3000;
+const RECONNECT_BASE_DELAY_MS = 3000;
+const RECONNECT_MAX_DELAY_MS = 60000;
 const KEEPALIVE_ALARM = "margin-bridge-keepalive";
+const SERVER_PROOF_PREFIX = "margin-bridge-server:";
+const CLIENT_PROOF_PREFIX = "margin-bridge-client:";
 
 // Keep extension secrets inaccessible to any future content script.
 if (chrome.storage.local.setAccessLevel) {
@@ -29,7 +32,9 @@ if (chrome.storage.local.setAccessLevel) {
 }
 
 let bridgeSocket = null;
+let bridgeRegistered = false;
 let bridgeReconnectTimer = null;
+let bridgeReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
 let bridgeConfig = {
   enabled: false,
   port: DEFAULT_MCP_BRIDGE_PORT,
@@ -38,19 +43,11 @@ let bridgeConfig = {
 
 let bridgeStatus = {
   connected: false,
-  lastError: "",
-  lastConnectedAt: null
+  lastError: ""
 };
 
-let tempEmailConfig = {
-  enabled: false,
-  apiUrl: "",
-  apiKey: ""
-};
-
-let toolAccessConfig = {
-  enabled: {}
-};
+let toolAccessConfig = normalizeToolAccessConfig(null);
+let toolAccessReady;
 
 let webSearchConfig = normalizeWebSearchSettings(null);
 
@@ -61,7 +58,6 @@ chrome.sidePanel
 chrome.runtime.onInstalled.addListener(async () => {
   await ensureMcpBridgeDefaults();
   await loadMcpBridgeConfig();
-  await loadTempEmailConfig();
   await loadToolAccessConfig();
   await loadWebSearchConfig();
   await syncNetworkAutoCaptureFromStorage();
@@ -71,7 +67,6 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 chrome.runtime.onStartup.addListener(async () => {
   await loadMcpBridgeConfig();
-  await loadTempEmailConfig();
   await loadToolAccessConfig();
   await loadWebSearchConfig();
   await syncNetworkAutoCaptureFromStorage();
@@ -83,10 +78,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.mcpBridge) {
     bridgeConfig = normalizeMcpBridgeSettings(changes.mcpBridge.newValue);
     scheduleMcpBridgeConnection(true);
-  }
-  if (changes.tempEmail) {
-    tempEmailConfig = normalizeTempEmailSettings(changes.tempEmail.newValue);
-    sendFeatureFlagsToBridge();
   }
   if (changes.toolAccess) {
     toolAccessConfig = normalizeToolAccessConfig(changes.toolAccess.newValue);
@@ -103,7 +94,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== KEEPALIVE_ALARM) return;
-  if (bridgeConfig.enabled && (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN)) {
+  if (bridgeConfig.enabled && !bridgeReconnectTimer && (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN)) {
     scheduleMcpBridgeConnection();
   }
   pollOpenAIDeviceAuthorization().catch(() => {});
@@ -232,7 +223,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "mcp-bridge/feature-flags-changed") {
     (async () => {
-      await loadTempEmailConfig();
       await loadToolAccessConfig();
       await loadWebSearchConfig();
       sendFeatureFlagsToBridge();
@@ -264,6 +254,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "network-tool" && message.name) {
     (async () => {
       try {
+        await toolAccessReady;
         if (!isStoredToolEnabled(message.name)) {
           sendResponse({ ok: false, result: `Tool "${message.name}" is disabled in Margin settings.` });
           return;
@@ -306,6 +297,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "page-tool" && message.name) {
     (async () => {
       try {
+        await toolAccessReady;
         if (!isStoredToolEnabled(message.name)) {
           sendResponse({ ok: false, result: `Tool "${message.name}" is disabled in Margin settings.` });
           return;
@@ -322,28 +314,59 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-async function ensureMcpBridgeDefaults(forceNewToken = false) {
-  const stored = await chrome.storage.local.get(["mcpBridge"]);
-  const current = stored.mcpBridge;
-  if (current && current.token && !forceNewToken) {
-    return current.token;
-  }
+let mcpBridgeDefaultsPromise = null;
 
-  const token = generateBridgeToken();
-  const next = {
-    enabled: current?.enabled === true,
-    port: Number(current?.port) || DEFAULT_MCP_BRIDGE_PORT,
-    token
-  };
-  await chrome.storage.local.set({ mcpBridge: next });
-  bridgeConfig = next;
-  return token;
+function ensureMcpBridgeDefaults(forceNewToken = false) {
+  if (mcpBridgeDefaultsPromise && !forceNewToken) return mcpBridgeDefaultsPromise;
+
+  mcpBridgeDefaultsPromise = (async () => {
+    const stored = await chrome.storage.local.get(["mcpBridge"]);
+    const current = stored.mcpBridge;
+    if (current && current.token && !forceNewToken) {
+      return current.token;
+    }
+
+    const token = randomHex(16);
+    const next = {
+      enabled: current?.enabled === true,
+      port: Number(current?.port) || DEFAULT_MCP_BRIDGE_PORT,
+      token
+    };
+    await chrome.storage.local.set({ mcpBridge: next });
+    bridgeConfig = next;
+    return token;
+  })();
+
+  return mcpBridgeDefaultsPromise;
 }
 
-function generateBridgeToken() {
-  const bytes = new Uint8Array(16);
+function randomHex(byteLength) {
+  const bytes = new Uint8Array(byteLength);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function bridgeProof(token, payload) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(token),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+  return Array.from(new Uint8Array(signature), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function bridgeProofsMatch(expected, provided) {
+  if (typeof expected !== "string" || typeof provided !== "string") return false;
+  if (expected.length !== provided.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < expected.length; i += 1) {
+    mismatch |= expected.charCodeAt(i) ^ provided.charCodeAt(i);
+  }
+  return mismatch === 0;
 }
 
 async function loadMcpBridgeConfig() {
@@ -352,14 +375,15 @@ async function loadMcpBridgeConfig() {
   bridgeConfig = normalizeMcpBridgeSettings(stored.mcpBridge);
 }
 
-async function loadTempEmailConfig() {
-  const stored = await chrome.storage.local.get(["tempEmail"]);
-  tempEmailConfig = normalizeTempEmailSettings(stored.tempEmail);
-}
-
 function normalizeToolAccessConfig(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
-  const enabled = value.enabled && typeof value.enabled === "object" ? value.enabled : {};
+  const stored = value.enabled && typeof value.enabled === "object" ? value.enabled : {};
+  const enabled = {};
+  BUILT_IN_TOOL_NAMES.forEach((toolName) => {
+    enabled[toolName] = Object.hasOwn(stored, toolName)
+      ? stored[toolName] === true
+      : DEFAULT_ENABLED_TOOLS.has(toolName);
+  });
   return { enabled };
 }
 
@@ -367,9 +391,12 @@ function isStoredToolEnabled(toolName) {
   return toolAccessConfig.enabled?.[toolName] === true;
 }
 
-async function loadToolAccessConfig() {
-  const stored = await chrome.storage.local.get(["toolAccess"]);
-  toolAccessConfig = normalizeToolAccessConfig(stored.toolAccess);
+function loadToolAccessConfig() {
+  toolAccessReady = (async () => {
+    const stored = await chrome.storage.local.get(["toolAccess"]);
+    toolAccessConfig = normalizeToolAccessConfig(stored.toolAccess);
+  })();
+  return toolAccessReady;
 }
 
 async function loadWebSearchConfig() {
@@ -402,14 +429,9 @@ function sendFeatureFlagsToBridge() {
       type: "feature-flags/set",
       flags: {
         tools: buildBridgeToolSchemas(),
-        tempEmail: {
-          enabled: tempEmailConfig.enabled === true,
-          apiUrl: tempEmailConfig.apiUrl || "",
-          apiKey: tempEmailConfig.apiKey || ""
-        },
         toolAccess: toolAccessConfig,
-        // Only advertise availability. The Tavily key stays in the extension;
-        // the bridge runs the search itself when an MCP client calls the tool.
+        // Only advertise availability. The Tavily key stays in the extension,
+        // which runs the search when an MCP client calls the tool.
         webSearch: {
           enabled: isWebSearchAvailable(webSearchConfig)
         }
@@ -418,10 +440,29 @@ function sendFeatureFlagsToBridge() {
   } catch (e) {}
 }
 
-function requestMcpToolFromPanel(message) {
+// Side panels are per-window, so the broadcast has to name one panel or every
+// open window would run the same tool call.
+async function activePanelWindowId() {
+  const panels = await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] });
+  if (!panels.length) return null;
+  const focused = await chrome.windows.getLastFocused().catch(() => null);
+  const active = panels.find((panel) => panel.windowId === focused?.id);
+  return (active || panels[0]).windowId;
+}
+
+async function requestMcpToolFromPanel(message) {
+  const targetWindowId = await activePanelWindowId();
+  if (targetWindowId === null) {
+    return {
+      content: [{ type: "text", text: "Open the Margin side panel to approve and run browser tools." }],
+      isError: true,
+    };
+  }
+
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({
       type: "mcp/tool-call",
+      targetWindowId,
       name: message.name,
       arguments: message.arguments || {},
     }, (response) => {
@@ -471,6 +512,7 @@ function disconnectBridge() {
     } catch {}
     bridgeSocket = null;
   }
+  bridgeRegistered = false;
   bridgeStatus.connected = false;
 }
 
@@ -492,13 +534,15 @@ function connectBridge() {
   }
 
   bridgeSocket = socket;
+  bridgeRegistered = false;
+  const clientNonce = randomHex(32);
 
   socket.onopen = () => {
     socket.send(JSON.stringify({
-      type: "register",
+      type: "hello",
       client: "margin-extension",
       version: chrome.runtime.getManifest().version,
-      token: bridgeConfig.token || ""
+      nonce: clientNonce
     }));
   };
 
@@ -510,10 +554,33 @@ function connectBridge() {
       return;
     }
 
+    if (message.type === "hello/proof") {
+      const token = bridgeConfig.token || "";
+      const [expectedServerProof, clientProof] = await Promise.all([
+        bridgeProof(token, `${SERVER_PROOF_PREFIX}${clientNonce}`),
+        bridgeProof(token, `${CLIENT_PROOF_PREFIX}${String(message.nonce || "")}`)
+      ]);
+      if (bridgeSocket !== socket) return;
+      if (!bridgeProofsMatch(expectedServerProof, message.proof)) {
+        bridgeStatus.lastError = "Bridge server failed authentication";
+        disconnectBridge();
+        queueReconnect();
+        return;
+      }
+      socket.send(JSON.stringify({
+        type: "register",
+        proof: clientProof,
+        client: "margin-extension",
+        version: chrome.runtime.getManifest().version
+      }));
+      return;
+    }
+
     if (message.type === "register/ok") {
+      bridgeRegistered = true;
       bridgeStatus.connected = true;
       bridgeStatus.lastError = "";
-      bridgeStatus.lastConnectedAt = Date.now();
+      bridgeReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
       sendFeatureFlagsToBridge();
       return;
     }
@@ -532,8 +599,9 @@ function connectBridge() {
     }
 
     if (message.type === "tool/call" && message.id && message.name) {
-      const webSearchAllowed = WEB_SEARCH_TOOL_NAMES.has(message.name) && isWebSearchAvailable(webSearchConfig);
-      if (!webSearchAllowed && !isStoredToolEnabled(message.name)) {
+      if (!bridgeRegistered) return;
+      await toolAccessReady;
+      if (!isStoredToolEnabled(message.name)) {
         socket.send(JSON.stringify({
           type: "tool/result",
           id: message.id,
@@ -583,10 +651,12 @@ function connectBridge() {
 
 function queueReconnect() {
   if (!bridgeConfig.enabled || bridgeReconnectTimer) return;
+  const delay = bridgeReconnectDelayMs;
+  bridgeReconnectDelayMs = Math.min(bridgeReconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
   bridgeReconnectTimer = setTimeout(() => {
     bridgeReconnectTimer = null;
     connectBridge();
-  }, RECONNECT_DELAY_MS);
+  }, delay);
 }
 
 loadMcpBridgeConfig().then(() => {
@@ -594,6 +664,6 @@ loadMcpBridgeConfig().then(() => {
   chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
 });
 
-loadTempEmailConfig();
 loadToolAccessConfig();
+loadWebSearchConfig();
 syncNetworkAutoCaptureFromStorage();

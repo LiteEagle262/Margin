@@ -1,51 +1,26 @@
 import { isSafeVirtualPath, safeRecord } from "../lib/safe-record.js";
-
-const listeners = new Map();
-
-export function subscribe(key, fn) {
-  if (!listeners.has(key)) listeners.set(key, new Set());
-  listeners.get(key).add(fn);
-  return () => listeners.get(key)?.delete(fn);
-}
-
-function emit(key) {
-  const subs = listeners.get(key);
-  if (!subs) return;
-  for (const fn of subs) {
-    try {
-      fn();
-    } catch (err) {
-      console.error(`State listener for "${key}" failed:`, err);
-    }
-  }
-}
+import { AI_PROVIDERS } from "../api/provider.js";
 
 export let settings = {
   aiProvider: "openrouter",
   providerConfigs: {
     openrouter: {
       apiKey: "",
-      model: "anthropic/claude-3.5-sonnet"
+      model: AI_PROVIDERS.openrouter.defaultModel
     },
     openai: {
-      apiKey: "",
-      model: "gpt-5.6-sol"
+      model: AI_PROVIDERS.openai.defaultModel
     }
   },
   dataSharingConsent: false,
   apiKey: "",
-  model: "anthropic/claude-3.5-sonnet",
+  model: AI_PROVIDERS.openrouter.defaultModel,
   systemPrompt: "",
   mcpServers: [],
   mcpBridge: {
     enabled: false,
     port: 9229,
     token: ""
-  },
-  tempEmail: {
-    enabled: false,
-    apiUrl: "",
-    apiKey: ""
   },
   webSearch: {
     enabled: false,
@@ -87,7 +62,6 @@ export let settings = {
 
 export function setSettings(next) {
   settings = next;
-  emit("settings");
 }
 
 export let chats = {};
@@ -98,26 +72,22 @@ export function setChats(next) {
   for (const chat of Object.values(chats)) {
     if (chat && typeof chat === "object") chat.files = safeRecord(chat.files, isSafeVirtualPath);
   }
-  emit("chats");
 }
 
 export function setCurrentChatId(id) {
   currentChatId = id;
-  emit("currentChatId");
 }
 
 export let globalWorkspace = {};
 
 export function setGlobalWorkspace(next) {
   globalWorkspace = safeRecord(next, isSafeVirtualPath);
-  emit("globalWorkspace");
 }
 
 export let uploadedAttachments = [];
 
 export function setUploadedAttachments(next) {
   uploadedAttachments = next;
-  emit("uploadedAttachments");
 }
 
 export let isAgentRunning = false;
@@ -136,7 +106,6 @@ export function beginAgentRunState(chatId = currentChatId) {
     readOnlyCalls: {},
     toolCallCount: 0
   };
-  emit("agentRun");
 }
 
 export function endAgentRunState() {
@@ -145,12 +114,10 @@ export function endAgentRunState() {
   activeAgentChatId = null;
   agentAbortController = null;
   activeToolRunStats = null;
-  emit("agentRun");
 }
 
 export function requestAgentStop() {
   agentStopRequested = true;
-  emit("agentRun");
 }
 
 export let openRouterModels = [];
@@ -160,7 +127,6 @@ export let openRouterEndpointsLoading = false;
 
 export function setOpenRouterModels(next) {
   openRouterModels = next;
-  emit("openRouterModels");
 }
 
 export function setOpenRouterModelsLoading(next) {
@@ -169,7 +135,6 @@ export function setOpenRouterModelsLoading(next) {
 
 export function setOpenRouterEndpoints(next) {
   openRouterEndpoints = next;
-  emit("openRouterEndpoints");
 }
 
 export function setOpenRouterEndpointsLoading(next) {

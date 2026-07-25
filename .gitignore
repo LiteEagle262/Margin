@@ -17,7 +17,6 @@ dist/
 .env
 .env.*
 !.env.example
-.margin-cli/
 *.pem
 *.p12
 *.pfx
@@ -25,7 +24,4 @@ dist/
 *.crt
 *.log
 
-# Go build output
-bin/
-coverage.out
 ui-mockups

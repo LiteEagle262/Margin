@@ -136,9 +136,6 @@ export async function refreshProviderBadge() {
   }
 }
 
-// Retained for compatibility with older provider-neutral callers.
-export const refreshOpenRouterBalance = refreshProviderBadge;
-
 export function getModelDisplayName(modelId) {
   const match = openRouterModels.find(m => m.id === modelId);
   return match ? match.name : modelId;
@@ -227,8 +224,6 @@ export async function ensureProviderModelsLoaded() {
   if (openRouterModels.length > 0 || openRouterModelsLoading) return;
   await fetchActiveProviderModels();
 }
-
-export const ensureOpenRouterModelsLoaded = ensureProviderModelsLoaded;
 
 function filterModels(query) {
   const q = query.trim().toLowerCase();

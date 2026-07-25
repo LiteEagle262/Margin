@@ -1,7 +1,7 @@
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 
-export const RUNTIME_ENTRIES = Object.freeze([
+const RUNTIME_ENTRIES = Object.freeze([
   "manifest.json",
   "background.js",
   "background",
@@ -14,8 +14,6 @@ const FORBIDDEN_SEGMENTS = new Set([
   ".git",
   ".next",
   "node_modules",
-  "cli-app",
-  "mail-server",
   "mcp-server",
   "website",
 ]);
@@ -29,7 +27,6 @@ const FORBIDDEN_FILE_PATTERNS = [
 
 const SOURCE_ONLY_FILES = new Set([
   "icons/icon.svg",
-  "shared/text.js",
 ]);
 
 function assertSafeRelativePath(relativePath) {

@@ -35,7 +35,6 @@ function renderNetworkCaptureSettings() {
   if (redactInput) redactInput.checked = capture.redactSensitiveData === true;
 
   setNetworkCaptureBadge(capture);
-  refreshNetworkCaptureBadge();
 }
 
 function initNetworkCaptureSettings() {
