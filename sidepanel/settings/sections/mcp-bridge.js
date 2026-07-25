@@ -6,8 +6,8 @@ function buildMcpBridgeConfigSnippet(config) {
   const payload = {
     mcpServers: {
       margin: {
-        command: "node",
-        args: ["ABSOLUTE_PATH_TO_EXTENSION/mcp-server/index.js"],
+        command: "npx",
+        args: ["-y", "margin-mcp-server@latest"],
         env: {
           MARGIN_MCP_PORT: String(config.port || DEFAULT_MCP_BRIDGE_PORT),
           ...(config.token ? { MARGIN_MCP_TOKEN: config.token } : {})

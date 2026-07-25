@@ -5,8 +5,28 @@
   "type": "module",
   "main": "index.js",
   "bin": {
-    "margin-mcp": "index.js"
+    "margin-mcp-server": "index.js"
   },
+  "files": [
+    "index.js",
+    "temp-email.js",
+    "web-search.js",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LiteEagle262/extension-thhing.git",
+    "directory": "mcp-server"
+  },
+  "homepage": "https://github.com/LiteEagle262/extension-thhing#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser-automation",
+    "chrome-extension",
+    "claude",
+    "margin"
+  ],
   "scripts": {
     "start": "node index.js",
     "check": "node --check index.js && node --check temp-email.js",

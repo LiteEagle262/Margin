@@ -2,7 +2,7 @@ import { chats, currentChatId, settings } from "../state/store.js";
 import { approxTokens, formatTokens, formatCost } from "../lib/format.js";
 import { getEffectiveSystemPrompt, getActiveModelInfo, buildApiMessagesForChat, countApiMessageTokens } from "../agent/context.js";
 import { getMcpToolSchemas, filterEnabledToolSchemas } from "../tools/execute.js";
-import { BROWSER_TOOLS, WORKSPACE_TOOLS, WEB_SEARCH_TOOLS } from "../tools/schemas.js";
+import { BROWSER_TOOLS, WORKSPACE_TOOLS, WEB_SEARCH_TOOLS } from "../../shared/tool-schemas.js";
 
 const USAGE_CATEGORIES = [
   { key: "system",       label: "System prompt", color: "#5e9cff" },
