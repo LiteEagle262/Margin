@@ -1,3 +1,8 @@
+// Tool definitions shared by the in-chat agent (which needs OpenAI function
+// shape) and the MCP bridge (which needs MCP shape). Adding a tool here is the
+// only edit required: the extension pushes the MCP-shaped list to the bridge
+// server at connect time, so the server carries no copy of its own.
+
 export const BROWSER_TOOLS = [
   {
     type: "function",
@@ -10,6 +15,33 @@ export const BROWSER_TOOLS = [
           verbose: { type: "boolean", description: "Include more non-interactive elements. Defaults to false." },
           limit: { type: "number", description: "Maximum elements to return. Defaults to 80." }
         }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_batch",
+      description: "Run several browser actions in one tool call instead of one call per action. Use this whenever the next two or more steps are already known — navigate then wait_for then take_snapshot, or fill a form then click submit. Actions run in order and stop at the first failure unless stop_on_error is false. Batchable: navigate, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, take_snapshot, get_dom, get_active_tab, list_tabs, run_js, evaluate_script. take_screenshot, workspace, search, and MCP tools must be called on their own.",
+      parameters: {
+        type: "object",
+        properties: {
+          actions: {
+            type: "array",
+            description: "Ordered actions to run, at most 20.",
+            items: {
+              type: "object",
+              properties: {
+                tool: { type: "string", description: "Name of the browser tool to run." },
+                arguments: { type: "object", description: "Arguments for that tool, exactly as its own schema defines them." }
+              },
+              required: ["tool"]
+            }
+          },
+          stop_on_error: { type: "boolean", description: "Stop after the first failed action and mark the rest skipped. Defaults to true." },
+          include_snapshot: { type: "boolean", description: "Append one page snapshot after the last action. Defaults to false." }
+        },
+        required: ["actions"]
       }
     }
   },
@@ -574,3 +606,18 @@ export const RECON_TOOLS = [
     }
   }
 ];
+
+// Tools the MCP bridge proxies back into the extension. Workspace tools are
+// left out because MCP clients have their own filesystem access, and web-search
+// and temp-email tools are left out because the bridge server gates those on
+// their own feature flags and owns their definitions.
+export const MCP_PROXIED_TOOLS = [...BROWSER_TOOLS, ...RECON_TOOLS];
+
+export function toMcpToolSchema(tool) {
+  const definition = tool.function || {};
+  return {
+    name: definition.name,
+    description: definition.description || "",
+    inputSchema: definition.parameters || { type: "object", properties: {} }
+  };
+}

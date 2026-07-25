@@ -224,7 +224,7 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
       args = JSON.parse(toolCall.function?.arguments || "{}");
     } catch {}
 
-    const callStatus = { stage: "call", name, args };
+    const callStatus = { stage: "call", name, args, ts: Date.now() };
     if (name !== "write_file") {
       chat.messages.push({ role: "tool-status", content: callStatus });
       appendForChat(chatId, "tool-status", callStatus);
@@ -266,6 +266,7 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
         result: serialized.screenshot
           ? "Screenshot captured and attached to the next model turn."
           : rawSummary.length > 2000 ? `${rawSummary.slice(0, 2000)}\n...` : rawSummary,
+        ts: Date.now(),
       };
       chat.messages.push({ role: "tool-status", content: resultStatus });
       appendForChat(chatId, "tool-status", resultStatus);

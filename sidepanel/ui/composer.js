@@ -101,6 +101,16 @@ export function initChatEvents() {
     });
   }
 
+  const reloadBalanceBtn = document.getElementById("reload-balance-btn");
+  if (reloadBalanceBtn) {
+    reloadBalanceBtn.addEventListener("click", () => {
+      reloadBalanceBtn.classList.add("spinning");
+      Promise.resolve(refreshProviderBadge()).finally(() => {
+        setTimeout(() => reloadBalanceBtn.classList.remove("spinning"), 500);
+      });
+    });
+  }
+
   if (chatTextarea) {
     chatTextarea.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {

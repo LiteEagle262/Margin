@@ -46,8 +46,10 @@ const pendingCalls = new Map();
 let extensionSocket = null;
 let extensionInfo = null;
 let mcpServer = null;
-// Expose no tools until the authenticated extension sends its allowlist.
+// Expose no tools until the authenticated extension sends its allowlist and the
+// matching definitions. Both arrive together on `feature-flags/set`.
 let enabledToolNames = new Set();
+let pushedTools = [];
 
 function log(message) {
   console.error(`[margin-mcp] ${message}`);
@@ -101,6 +103,7 @@ function rejectPendingCalls(reason) {
 function clearExtensionControlledState() {
   const hadVisibleTools = visibleTools().length > 0;
   enabledToolNames = new Set();
+  pushedTools = [];
   setTempEmailFlags({ enabled: false, apiUrl: "", apiKey: "" });
   setWebSearchEnabled(false);
   if (hadVisibleTools && mcpServer) {
@@ -144,317 +147,69 @@ async function callExtensionTool(name, args = {}) {
   return waitForExtensionToolResult(id);
 }
 
-const TOOLS = [
-  {
-    name: "take_snapshot",
-    description: "Take a compact accessibility-style page snapshot with element uids for reliable interaction.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        verbose: { type: "boolean", description: "Include more non-interactive elements." },
-        limit: { type: "number", description: "Maximum elements to return." }
-      }
-    }
-  },
-  {
-    name: "get_active_tab",
-    description: "Get metadata about the currently active browser tab (id, url, title).",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "list_tabs",
-    description: "List tabs in the current browser window.",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "navigate",
-    description: "Navigate the active tab to a URL.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "Destination URL." }
-      },
-      required: ["url"]
-    }
-  },
-  {
-    name: "get_dom",
-    description: "Retrieve text body content and truncated HTML DOM of the active webpage.",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "take_screenshot",
-    description: "Capture a screenshot of the visible viewport of the active tab.",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "click_element",
-    description: "Click a page element. Prefer uid from take_snapshot; selector is a fallback.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        uid: { type: "string", description: "Element uid from take_snapshot." },
-        selector: { type: "string", description: "CSS selector fallback." },
-        dblClick: { type: "boolean", description: "Double click the target." },
-        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
-      }
-    }
-  },
-  {
-    name: "fill_element",
-    description: "Set the value of an input, textarea, select, checkbox, or radio element. Prefer uid from take_snapshot.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        uid: { type: "string", description: "Element uid from take_snapshot." },
-        selector: { type: "string", description: "CSS selector fallback." },
-        value: { type: "string", description: "Value to enter. Use true/false for checkboxes and radios." },
-        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
-      },
-      required: ["value"]
-    }
-  },
-  {
-    name: "fill_form",
-    description: "Fill multiple form fields in one call. Prefer this over multiple fill_element calls.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        elements: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              uid: { type: "string" },
-              selector: { type: "string" },
-              value: { type: "string" }
-            },
-            required: ["value"]
-          }
-        },
-        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
-      },
-      required: ["elements"]
-    }
-  },
-  {
-    name: "hover_element",
-    description: "Hover over a page element. Prefer uid from take_snapshot; selector is a fallback.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        uid: { type: "string", description: "Element uid from take_snapshot." },
-        selector: { type: "string", description: "CSS selector fallback." },
-        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
-      }
-    }
-  },
-  {
-    name: "press_key",
-    description: "Press a key or key combination such as Enter, Tab, Escape, Control+A, or Control+Shift+R.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        key: { type: "string", description: "Key or key combination to press." },
-        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
-      },
-      required: ["key"]
-    }
-  },
-  {
-    name: "wait_for",
-    description: "Wait for page state after navigation or interaction.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "Text that should appear on the page." },
-        selector: { type: "string", description: "CSS selector that should appear." },
-        url_contains: { type: "string", description: "Substring expected in the current URL." },
-        timeout: { type: "number", description: "Maximum wait time in milliseconds." },
-        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
-      }
-    }
-  },
-  {
-    name: "evaluate_script",
-    description: "Evaluate a JavaScript function in the page context and return a JSON-serializable result.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        function: { type: "string", description: "JavaScript function declaration/expression to execute." },
-        args: {
-          type: "array",
-          items: { type: "string" },
-          description: "Optional string arguments passed to the function. For complex values, pass JSON strings and parse inside the function."
-        }
-      },
-      required: ["function"]
-    }
-  },
-  {
-    name: "type_text",
-    description: "Type text into an input element or the focused field. Prefer fill_element/fill_form for normal forms.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        uid: { type: "string", description: "Element uid from take_snapshot." },
-        selector: { type: "string", description: "CSS selector fallback." },
-        text: { type: "string", description: "Text to enter." },
-        submitKey: { type: "string", description: "Optional key to press after typing." },
-        include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result." }
-      },
-      required: ["text"]
-    }
-  },
-  {
-    name: "scroll_page",
-    description: "Scroll the active page up or down.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        direction: { type: "string", enum: ["up", "down"], description: "Scroll direction." },
-        amount: { type: "number", description: "Pixels to scroll. Defaults to 500." }
-      },
-      required: ["direction"]
-    }
-  },
-  {
-    name: "run_js",
-    description: "Execute JavaScript in the active page context and return the result.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        code: { type: "string", description: "JavaScript code to evaluate." }
-      },
-      required: ["code"]
-    }
-  },
-  {
-    name: "start_network_capture",
-    description: "Start recording HTTP/network requests on the active tab.",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "stop_network_capture",
-    description: "Stop recording network requests on the active tab.",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "get_network_logs",
-    description: "List captured network requests. Filter by URL, method, status, or type.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url_contains: { type: "string", description: "Filter logs to URLs containing this substring." },
-        method: { type: "string", description: "Filter by HTTP method." },
-        status: { type: "number", description: "Filter by HTTP status code." },
-        type: { type: "string", description: "Filter by resource type, e.g. XHR or Fetch." },
-        limit: { type: "number", description: "Max entries to return." },
-        include_body: { type: "boolean", description: "Include request/response bodies." }
-      }
-    }
-  },
-  {
-    name: "get_network_log_detail",
-    description: "Get full details for a single network request including headers and response body.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        request_id: { type: "string", description: "Request id from get_network_logs." }
-      },
-      required: ["request_id"]
-    }
-  },
-  {
-    name: "clear_network_logs",
-    description: "Clear all captured network logs for the active tab.",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "get_authenticator_code",
-    description: "Generate a current 6-digit TOTP authenticator code from a saved manual key for a domain. If domain is omitted, uses the active tab hostname.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        domain: { type: "string", description: "Optional hostname or URL. Defaults to the current active tab hostname." }
-      }
-    }
-  },
-  {
-    name: "list_authenticator_domains",
-    description: "List domains that have saved authenticator manual keys. Does not reveal the keys.",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "http_request",
-    description: "Make an HTTP request from the active page's context so its cookies, session, and origin apply. Use to replay or modify an API call seen in network logs. Returns status, headers, and body. Cross-origin requests are subject to the page's CORS policy.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "Request URL. Relative URLs resolve against the active page." },
-        method: { type: "string", description: "HTTP method. Defaults to GET." },
-        headers: { type: "object", description: "Optional request headers as a key/value object." },
-        body: { type: "string", description: "Optional request body string. Omit for GET/HEAD." },
-        credentials: { type: "string", enum: ["include", "omit", "same-origin"], description: "Whether to send cookies. Defaults to include." },
-        max_response_chars: { type: "number", description: "Maximum response body characters to return. Defaults to 20000." }
-      },
-      required: ["url"]
-    }
-  },
-  {
-    name: "get_cookies",
-    description: "Read cookies for the active tab's site (or a given domain), including httpOnly cookies that page scripts cannot access.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        domain: { type: "string", description: "Optional domain or URL. Defaults to the active tab." },
-        name: { type: "string", description: "Optional cookie name filter." }
-      }
-    }
-  },
-  {
-    name: "get_storage",
-    description: "Read localStorage and/or sessionStorage for the active page.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        type: { type: "string", enum: ["local", "session", "all"], description: "Which storage to read. Defaults to all." },
-        keys: { type: "array", items: { type: "string" }, description: "Optional list of keys to return. Omit for all keys." }
-      }
-    }
-  },
-  {
-    name: "list_scripts",
-    description: "List JavaScript files loaded by the active page (external, inline, and resource-timing entries).",
-    inputSchema: { type: "object", properties: {} }
-  },
-  {
-    name: "search_scripts",
-    description: "Search the source of the page's loaded JavaScript bundles for a string or regex. Finds API endpoints, GraphQL operations, keys, or flags. Returns matching snippets, not whole bundles.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search term or regex source." },
-        regex: { type: "boolean", description: "Treat query as a case-insensitive regular expression. Defaults to false." },
-        max_matches: { type: "number", description: "Maximum matches to return. Defaults to 30, capped at 200." }
-      },
-      required: ["query"]
-    }
-  },
+// Definitions for tools this process implements or gates on its own feature
+// flags. Every tool the bridge proxies into the extension is pushed over
+// `feature-flags/set` instead, so the extension stays the single source of truth.
+const LOCAL_TOOLS = [
   ...WEB_SEARCH_TOOLS,
   ...TEMP_EMAIL_TOOLS
 ];
 
-// Tools gated by their own feature flag rather than the toolAccess allowlist.
-const FLAG_GATED_TOOL_NAMES = new Set([...TEMP_EMAIL_TOOL_NAMES, ...WEB_SEARCH_TOOL_NAMES]);
+const MAX_PUSHED_TOOLS = 100;
+const MAX_TOOL_NAME_LENGTH = 64;
+const MAX_TOOL_DESCRIPTION_LENGTH = 4000;
+const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 
-function visibleTools() {
-  return TOOLS.filter((tool) => {
-    if (TEMP_EMAIL_TOOL_NAMES.has(tool.name) && !isTempEmailEnabled()) return false;
-    if (WEB_SEARCH_TOOL_NAMES.has(tool.name) && !isWebSearchEnabled()) return false;
-    if (!FLAG_GATED_TOOL_NAMES.has(tool.name) && !enabledToolNames.has(tool.name)) return false;
-    return true;
+// The peer is token- and origin-authenticated, but its payload still defines
+// what MCP clients are told they can call, so it is validated rather than
+// trusted. Anything malformed is dropped instead of failing the whole push.
+export function sanitizeToolDefinitions(raw) {
+  if (!Array.isArray(raw)) return [];
+  const tools = [];
+  const seen = new Set();
+
+  for (const entry of raw) {
+    if (tools.length >= MAX_PUSHED_TOOLS) break;
+    if (!entry || typeof entry !== "object") continue;
+
+    const name = typeof entry.name === "string" ? entry.name : "";
+    if (name.length > MAX_TOOL_NAME_LENGTH || !TOOL_NAME_PATTERN.test(name)) continue;
+    if (seen.has(name)) continue;
+    // A pushed definition must never shadow a locally implemented tool:
+    // callTool routes temp-email by name before it reaches the proxy branch.
+    if (TEMP_EMAIL_TOOL_NAMES.has(name) || WEB_SEARCH_TOOL_NAMES.has(name)) continue;
+
+    const inputSchema = entry.inputSchema;
+    if (!inputSchema || typeof inputSchema !== "object" || Array.isArray(inputSchema)) continue;
+
+    seen.add(name);
+    tools.push({
+      name,
+      description: typeof entry.description === "string"
+        ? entry.description.slice(0, MAX_TOOL_DESCRIPTION_LENGTH)
+        : "",
+      inputSchema
+    });
+  }
+
+  return tools;
+}
+
+export function visibleTools() {
+  const local = LOCAL_TOOLS.filter((tool) => {
+    if (TEMP_EMAIL_TOOL_NAMES.has(tool.name)) return isTempEmailEnabled();
+    if (WEB_SEARCH_TOOL_NAMES.has(tool.name)) return isWebSearchEnabled();
+    return false;
   });
+  // The extension only pushes tools it has already enabled; intersecting with
+  // the separately pushed allowlist keeps one bug on either side from exposing
+  // a tool the user switched off.
+  const proxied = pushedTools.filter((tool) => enabledToolNames.has(tool.name));
+  return [...proxied, ...local];
+}
+
+function knownToolNames() {
+  return new Set([...pushedTools, ...LOCAL_TOOLS].map((tool) => tool.name));
 }
 
 export function startBridgeServer({
@@ -571,7 +326,10 @@ export function startBridgeServer({
 
       if (message.type === "feature-flags/set" && message.flags) {
         const tempEmail = message.flags.tempEmail || {};
-        const before = visibleTools().map((tool) => tool.name).join(",");
+        // Compare whole definitions, not just names: a pushed schema or
+        // description can now change while the tool list stays the same, and
+        // clients still need to be told to refetch.
+        const before = JSON.stringify(visibleTools());
         const { changed } = setTempEmailFlags({
           enabled: tempEmail.enabled === true,
           apiUrl: typeof tempEmail.apiUrl === "string" ? tempEmail.apiUrl : undefined,
@@ -584,10 +342,13 @@ export function startBridgeServer({
             entries.filter(([, enabled]) => enabled === true).map(([name]) => name)
           );
         }
+        if (Array.isArray(message.flags.tools)) {
+          pushedTools = sanitizeToolDefinitions(message.flags.tools);
+        }
         const webSearch = message.flags.webSearch || {};
         setWebSearchEnabled(webSearch.enabled === true);
-        const after = visibleTools().map((tool) => tool.name).join(",");
-        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, webSearch.enabled=${isWebSearchEnabled()}, tools=${enabledToolNames.size})`);
+        const after = JSON.stringify(visibleTools());
+        log(`Feature flags updated (tempEmail.enabled=${isTempEmailEnabled()}, webSearch.enabled=${isWebSearchEnabled()}, tools=${visibleTools().length})`);
         if ((changed || before !== after) && mcpServer) {
           mcpServer.notification({ method: "notifications/tools/list_changed" })
             .catch(() => {});
@@ -661,7 +422,7 @@ export async function main() {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
-    if (!TOOLS.some(tool => tool.name === name)) {
+    if (!knownToolNames().has(name)) {
       return {
         content: [{ type: "text", text: `Unknown tool: ${name}` }],
         isError: true

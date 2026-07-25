@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "margin": {
-      "command": "node",
-      "args": ["ABSOLUTE_PATH_TO_EXTENSION/mcp-server/index.js"],
+      "command": "npx",
+      "args": ["-y", "margin-mcp-server@latest"],
       "env": {
         "MARGIN_MCP_PORT": "9229",
         "MARGIN_MCP_TOKEN": "paste-token-from-extension-settings",
