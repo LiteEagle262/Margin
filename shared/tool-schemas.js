@@ -28,7 +28,7 @@ export const BROWSER_TOOLS = [
         properties: {
           actions: {
             type: "array",
-            description: "Ordered actions to run, at most 20.",
+            description: "Ordered actions to run, at most 10.",
             items: {
               type: "object",
               properties: {
@@ -324,13 +324,8 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "get_authenticator_code",
-      description: "Generate a current 6-digit TOTP authenticator code from a saved manual key for a domain. If domain is omitted, uses the active tab hostname.",
-      parameters: {
-        type: "object",
-        properties: {
-          domain: { type: "string", description: "Optional hostname or URL. Defaults to the current active tab hostname." }
-        }
-      }
+      description: "Generate a current 6-digit TOTP authenticator code from the saved manual key for the active tab's hostname. Codes for other sites cannot be generated; navigate the tab there first.",
+      parameters: { type: "object", properties: {} }
     }
   },
   {
@@ -472,10 +467,7 @@ export const WORKSPACE_TOOLS = [
   }
 ];
 
-export const WORKSPACE_TOOL_NAMES = new Set([
-  "write_file", "read_file", "list_files", "search_files",
-  "read_context_item", "get_file_info", "rename_file", "delete_file"
-]);
+export const WORKSPACE_TOOL_NAMES = new Set(WORKSPACE_TOOLS.map((tool) => tool.function.name));
 
 export const WEB_SEARCH_TOOLS = [
   {
@@ -557,11 +549,10 @@ export const RECON_TOOLS = [
     type: "function",
     function: {
       name: "get_cookies",
-      description: "Read cookies for the active tab's site (or a given domain), including httpOnly cookies that page scripts cannot access. Use this to understand session and auth tokens when reverse-engineering an API.",
+      description: "Read cookies for the active tab's site, including httpOnly cookies that page scripts cannot access. Use this to understand session and auth tokens when reverse-engineering an API. Cookies of other sites cannot be read; navigate the tab there first.",
       parameters: {
         type: "object",
         properties: {
-          domain: { type: "string", description: "Optional domain or URL. Defaults to the active tab." },
           name: { type: "string", description: "Optional cookie name filter." }
         }
       }
@@ -609,8 +600,8 @@ export const RECON_TOOLS = [
 
 // Tools the MCP bridge proxies back into the extension. Workspace tools are
 // left out because MCP clients have their own filesystem access, and web-search
-// and temp-email tools are left out because the bridge server gates those on
-// their own feature flags and owns their definitions.
+// tools are left out because the bridge server gates those on their own feature
+// flag and owns their definitions.
 export const MCP_PROXIED_TOOLS = [...BROWSER_TOOLS, ...RECON_TOOLS];
 
 export function toMcpToolSchema(tool) {

@@ -69,6 +69,20 @@ test("MCP request timeout also aborts a stalled response body", async () => {
   }
 });
 
+test("MCP requests reject a literal null body as a protocol error", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("null", { status: 200 });
+
+  try {
+    await assert.rejects(
+      mcpJsonRpcRequest("https://mcp.example.test", "tools/list"),
+      /did not contain a JSON-RPC payload/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("MCP client accepts JSON-RPC payloads delivered as SSE", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response([

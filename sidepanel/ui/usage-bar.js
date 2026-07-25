@@ -4,6 +4,10 @@ import { getEffectiveSystemPrompt, getActiveModelInfo, buildApiMessagesForChat, 
 import { getMcpToolSchemas, filterEnabledToolSchemas } from "../tools/execute.js";
 import { BROWSER_TOOLS, WORKSPACE_TOOLS, WEB_SEARCH_TOOLS } from "../../shared/tool-schemas.js";
 
+const USAGE_REFRESH_DELAY_MS = 200;
+
+let usageRefreshTimer = null;
+
 const USAGE_CATEGORIES = [
   { key: "system",       label: "System prompt", color: "#5e9cff" },
   { key: "browserTools", label: "Browser tools", color: "#7dd3a7" },
@@ -57,6 +61,11 @@ export function computeContextBreakdown() {
 }
 
 export function updateUsageBar() {
+  clearTimeout(usageRefreshTimer);
+  usageRefreshTimer = setTimeout(renderUsageBar, USAGE_REFRESH_DELAY_MS);
+}
+
+function renderUsageBar() {
   const ringBtn = document.getElementById("context-ring-btn");
   const tooltip = document.getElementById("context-tooltip");
   const costEl = document.getElementById("cost-meter");

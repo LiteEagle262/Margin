@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const port = Number(process.env.MARGIN_QA_PORT || 4173);
+const servedDirectories = ["sidepanel", "shared", "icons"].map((name) => path.join(root, name) + path.sep);
+const servedFiles = new Set([path.join(root, "tests", "qa-mock.js")]);
 const mimeTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -20,7 +22,7 @@ const server = http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
     const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "") || "sidepanel/sidepanel.html";
     const absolute = path.resolve(root, relative);
-    if (!absolute.startsWith(`${root}${path.sep}`)) {
+    if (!servedFiles.has(absolute) && !servedDirectories.some((directory) => absolute.startsWith(directory))) {
       response.writeHead(403).end("Forbidden");
       return;
     }

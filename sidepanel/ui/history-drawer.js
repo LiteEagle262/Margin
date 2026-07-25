@@ -1,10 +1,24 @@
-import { chats, currentChatId, isAgentRunning, setCurrentChatId } from "../state/store.js";
+import { chats, currentChatId, globalWorkspace, isAgentRunning, setCurrentChatId } from "../state/store.js";
 import { saveChats } from "../state/persistence.js";
 import { EDIT_ICON, SPARKLES_ICON } from "./icons.js";
 import { renderChatHistory } from "./chat-view.js";
 import { createNewChatSession } from "../features/chats.js";
+import { removeGlobalFile, saveGlobalWorkspace } from "../features/workspace.js";
 import { renameChatManually, generateChatTitle } from "../features/chat-titles.js";
 import { showToast } from "../lib/toast.js";
+
+let backdropHideTimer = null;
+
+function closeDrawer() {
+  const backdrop = document.getElementById("drawer-backdrop");
+  const drawer = document.getElementById("history-drawer");
+  if (!drawer || !backdrop) return;
+
+  drawer.classList.remove("active");
+  backdrop.classList.remove("active");
+  clearTimeout(backdropHideTimer);
+  backdropHideTimer = setTimeout(() => backdrop.classList.add("hidden"), 250);
+}
 
 export function initHistoryDrawer() {
   const hamburgerBtn = document.getElementById("hamburger-menu-btn");
@@ -14,16 +28,11 @@ export function initHistoryDrawer() {
 
   if (hamburgerBtn && drawer && backdrop) {
     hamburgerBtn.addEventListener("click", () => {
+      clearTimeout(backdropHideTimer);
       drawer.classList.add("active");
       backdrop.classList.remove("hidden");
       setTimeout(() => backdrop.classList.add("active"), 10);
     });
-
-    const closeDrawer = () => {
-      drawer.classList.remove("active");
-      backdrop.classList.remove("active");
-      setTimeout(() => backdrop.classList.add("hidden"), 250);
-    };
 
     backdrop.addEventListener("click", closeDrawer);
 
@@ -78,14 +87,7 @@ export function renderHistoryList() {
       saveChats();
       renderChatHistory();
       renderHistoryList();
-
-      const backdrop = document.getElementById("drawer-backdrop");
-      const drawer = document.getElementById("history-drawer");
-      if (drawer && backdrop) {
-        drawer.classList.remove("active");
-        backdrop.classList.remove("active");
-        setTimeout(() => backdrop.classList.add("hidden"), 250);
-      }
+      closeDrawer();
     });
 
     const actions = document.createElement("div");
@@ -138,7 +140,11 @@ function deleteChatSession(id) {
     return;
   }
   if (confirm("Are you sure you want to delete this chat session?")) {
+    Object.keys(chats[id]?.files || {}).forEach((path) => {
+      if (globalWorkspace[path]?.chatId === id) removeGlobalFile(path);
+    });
     delete chats[id];
+    saveGlobalWorkspace();
     if (currentChatId === id) {
       const keys = Object.keys(chats);
       if (keys.length > 0) {

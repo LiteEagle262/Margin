@@ -57,7 +57,7 @@ export function getActiveModelInfo() {
   };
 }
 
-export function getActiveModelRecord() {
+function getActiveModelRecord() {
   return openRouterModels.find(m => m.id === settings.model) || null;
 }
 
@@ -83,7 +83,7 @@ export function getAttachmentKind(fileOrAttachment) {
   return "binary";
 }
 
-export function getReadableAttachmentSupport() {
+function getReadableAttachmentSupport() {
   const modalities = getActiveModelInputModalities();
   const activeRecord = getActiveModelRecord();
   const modelKnown = !!activeRecord && activeRecord.capabilitiesKnown !== false;
@@ -167,7 +167,7 @@ export function countApiMessageTokens(message) {
   return total;
 }
 
-export function buildTextAttachmentBlock(attachment) {
+function buildTextAttachmentBlock(attachment) {
   return [
     "",
     `Attached file: ${attachment.name}`,
@@ -253,7 +253,25 @@ function blockTokenCount(block) {
   return block.messages.reduce((sum, message) => sum + countApiMessageTokens(message), 0);
 }
 
-export function getRecentInlineToolCallIds(messages) {
+function truncateToChars(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n[Truncated: ${text.length - maxChars} character(s) omitted to fit the model context window.]`;
+}
+
+function truncateBlockToBudget(block, budget) {
+  const share = Math.max(500, Math.floor((budget * 4) / block.messages.length));
+  for (const message of block.messages) {
+    if (typeof message.content === "string") {
+      message.content = truncateToChars(message.content, share);
+    } else if (Array.isArray(message.content)) {
+      for (const part of message.content) {
+        if (part?.type === "text") part.text = truncateToChars(String(part.text || ""), share);
+      }
+    }
+  }
+}
+
+function getRecentInlineToolCallIds(messages) {
   const ids = new Set();
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -264,7 +282,7 @@ export function getRecentInlineToolCallIds(messages) {
   return ids;
 }
 
-export function getContextItemId(msg) {
+function getContextItemId(msg) {
   return `tool_${msg.tool_call_id || ""}`;
 }
 
@@ -276,7 +294,7 @@ export function getContextItem(contextItemId) {
   ) || null;
 }
 
-export function summarizeToolContent(content) {
+function summarizeToolContent(content) {
   const text = String(content || "");
   const oneLine = text
     .replace(/\s+/g, " ")
@@ -358,6 +376,7 @@ function buildModelMessageBlocks(activeChat, includeOpenAIContinuation, includeO
         formatStoredMessageForModel(msg, inlineToolCallIds, includeOpenAIContinuation, includeOpenRouterReasoning),
       ];
       const expectedToolIds = new Set(msg.tool_calls.map(tc => tc.id).filter(Boolean));
+      const answeredToolIds = new Set();
       let j = i + 1;
       while (j < activeChat.messages.length) {
         const next = activeChat.messages[j];
@@ -369,10 +388,22 @@ function buildModelMessageBlocks(activeChat, includeOpenAIContinuation, includeO
           blockMessages.push(
             formatStoredMessageForModel(next, inlineToolCallIds, includeOpenAIContinuation, includeOpenRouterReasoning),
           );
+          answeredToolIds.add(next.tool_call_id);
           j++;
           continue;
         }
         break;
+      }
+      // Both providers reject a tool call with no matching result, so a run that was
+      // interrupted mid-loop would otherwise make the whole chat unsendable.
+      for (const toolCall of msg.tool_calls) {
+        if (!toolCall.id || answeredToolIds.has(toolCall.id)) continue;
+        blockMessages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          name: String(toolCall.function?.name || "unknown"),
+          content: "No result recorded: the run ended before this tool finished.",
+        });
       }
       blocks.push({ messages: blockMessages });
       i = j - 1;
@@ -407,7 +438,11 @@ export function buildApiMessagesForChat(activeChat) {
 
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i];
-    const blockTokens = blockTokenCount(block);
+    let blockTokens = blockTokenCount(block);
+    if (selected.length === 0 && blockTokens > budget) {
+      truncateBlockToBudget(block, budget);
+      blockTokens = blockTokenCount(block);
+    }
     if (selected.length > 0 && used + blockTokens > budget) {
       omitted = i + 1;
       break;
@@ -439,7 +474,7 @@ export function getEffectiveSystemPrompt() {
   if (!prompt.includes("get_authenticator_code")) {
     prompt = `${prompt}\n\n${AUTHENTICATOR_SYSTEM_PROMPT_ADDENDUM}`;
   }
-  if (isWebSearchAvailable() && !prompt.includes("search_web")) {
+  if (isWebSearchAvailable(settings.webSearch) && !prompt.includes("search_web")) {
     prompt = `${prompt}\n\n${WEB_SEARCH_SYSTEM_PROMPT_ADDENDUM}`;
   }
   return prompt;

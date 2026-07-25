@@ -91,6 +91,25 @@ async function refreshOpenAIStatus({ poll = false } = {}) {
 function renderOpenAIAccountSettings() {
   document.getElementById("openai-subscription-panel")?.classList.toggle("hidden", settings.aiProvider !== "openai");
   refreshOpenAIStatus();
+  syncOpenAIAccountPolling();
+}
+
+// Each poll wakes the MV3 service worker, so only poll while the panel is on screen.
+export function syncOpenAIAccountPolling() {
+  const settingsVisible = document.getElementById("settings-view")?.classList.contains("active") === true;
+  const shouldPoll = settingsVisible && settings.aiProvider === "openai";
+
+  if (shouldPoll && !refreshTimer) {
+    refreshTimer = setInterval(async () => {
+      const status = await getOpenAIAuthStatus().catch(() => null);
+      if (!status) return;
+      if (status.pending) await refreshOpenAIStatus({ poll: true });
+      else renderStatus(status);
+    }, 4000);
+  } else if (!shouldPoll && refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
 }
 
 function initOpenAIAccountSettings() {
@@ -151,14 +170,7 @@ function initOpenAIAccountSettings() {
     }
   });
 
-  clearInterval(refreshTimer);
-  refreshTimer = setInterval(async () => {
-    if (settings.aiProvider !== "openai") return;
-    const status = await getOpenAIAuthStatus().catch(() => null);
-    if (!status) return;
-    if (status.pending) await refreshOpenAIStatus({ poll: true });
-    else renderStatus(status);
-  }, 4000);
+  syncOpenAIAccountPolling();
 }
 
 export const openAIAccountSection = {

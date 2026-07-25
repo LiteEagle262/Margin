@@ -318,7 +318,6 @@ function getStoredMessage(messageIndex) {
 }
 
 function canEditStoredMessage(role, messageIndex) {
-  if (isAgentRunning) return false;
   const msg = getStoredMessage(messageIndex);
   if (!msg || msg.role !== role) return false;
   if (role === "user") return true;
@@ -328,9 +327,13 @@ function canEditStoredMessage(role, messageIndex) {
 function startMessageEdit(msgDiv, messageIndex) {
   const msg = getStoredMessage(messageIndex);
   if (!msg || !canEditStoredMessage(msg.role, messageIndex)) return;
+  if (isAgentRunning) {
+    showToast("Stop the current response before editing a message");
+    return;
+  }
 
   const contentDiv = msgDiv.querySelector(".message-content");
-  const messageText = contentDiv?.querySelector(".message-text");
+  const messageText = contentDiv?.querySelector(":scope > .message-text");
   const metaDiv = msgDiv.querySelector(".message-meta");
   if (!contentDiv || !messageText || !metaDiv) return;
 
@@ -385,7 +388,7 @@ function startMessageEdit(msgDiv, messageIndex) {
 
 async function commitMessageEdit(messageIndex, nextContent) {
   const msg = getStoredMessage(messageIndex);
-  if (!msg || !canEditStoredMessage(msg.role, messageIndex)) return;
+  if (!msg || !canEditStoredMessage(msg.role, messageIndex) || isAgentRunning) return;
 
   const trimmed = String(nextContent || "").trim();
   const hasAttachments = getDisplayAttachments(msg).length > 0;
@@ -423,31 +426,33 @@ async function commitMessageEdit(messageIndex, nextContent) {
     activeChat.messages = activeChat.messages.slice(0, messageIndex + 1);
   }
 
-  await saveChats();
-  renderChatHistory();
-  renderHistoryList();
-
-  if (originalRole !== "user") {
-    showToast("Message edited");
-    return;
-  }
-  if (settings.aiProvider === "openai") await refreshProviderBadge();
-  if (!isActiveProviderReady() || !settings.dataSharingConsent) {
-    showToast(settings.aiProvider === "openai"
-      ? "Message edited. Link OpenAI to regenerate."
-      : "Message edited. Add an OpenRouter key to regenerate.");
-    return;
-  }
-
-  showToast("Message edited. Regenerating...");
-  beginAgentRun(runChatId);
+  if (originalRole === "user") beginAgentRun(runChatId);
   try {
+    await saveChats();
+    renderChatHistory();
+    renderHistoryList();
+
+    if (originalRole !== "user") {
+      showToast("Message edited");
+      return;
+    }
+    if (settings.aiProvider === "openai") await refreshProviderBadge();
+    if (!isActiveProviderReady() || !settings.dataSharingConsent) {
+      showToast(settings.aiProvider === "openai"
+        ? "Message edited. Link OpenAI to regenerate."
+        : "Message edited. Add an OpenRouter key to regenerate.");
+      return;
+    }
+
+    showToast("Message edited. Regenerating...");
     await runAgentCycle(runChatId);
   } finally {
-    if (agentStopRequested) {
-      await recordAgentStopped(runChatId);
+    if (originalRole === "user") {
+      if (agentStopRequested) {
+        await recordAgentStopped(runChatId);
+      }
+      endAgentRun();
     }
-    endAgentRun();
   }
 }
 
@@ -812,6 +817,7 @@ function renderReasoningDisclosure(content) {
     });
   }
 
+  bindCopyButtons(wrapper);
   return wrapper;
 }
 
@@ -825,15 +831,5 @@ function normalizeToolStatus(content) {
     };
   }
 
-  const text = String(content || "");
-  const legacyCall = text.match(/Calling browser tool:\s*<strong>(.*?)<\/strong>/);
-  if (legacyCall) {
-    return { stage: "call", name: stripHtml(legacyCall[1]) };
-  }
-
-  if (text.startsWith("Result:")) {
-    return { stage: "result", name: "browser_tool", result: text.replace(/^Result:\s*/, "") };
-  }
-
-  return { stage: "status", name: "browser_tool", result: stripHtml(text) };
+  return { stage: "status", name: "browser_tool", result: stripHtml(String(content || "")) };
 }

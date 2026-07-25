@@ -221,17 +221,19 @@ function initToolAccessSettings() {
     if (!event.target?.classList?.contains("tool-access-input")) return;
     const toolName = event.target.dataset.toolName;
     const permission = OPTIONAL_PERMISSION_BY_TOOL.get(toolName);
+    let permissionDenied = false;
     if (event.target.checked && permission) {
       const granted = await chrome.permissions.request({ permissions: [permission] });
       if (!granted) {
         event.target.checked = false;
+        permissionDenied = true;
         showToast(`${permission} permission was not granted`);
       }
     }
     settings.toolAccess = collectToolAccessFromUI();
     renderToolAccessSettings();
-    // Permission prompts resolve after the original change event reaches autosave.
-    list?.dispatchEvent(new Event("change", { bubbles: true }));
+    // A denied prompt resolves after the original change event reached autosave.
+    if (permissionDenied) list?.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
   (async () => {

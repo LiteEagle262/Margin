@@ -98,6 +98,35 @@ test("OpenAI final turns keep stateless replay state and stored errors stay out 
   }
 });
 
+test("tool calls left unanswered by an interrupted run are backfilled", () => {
+  const previousSettings = structuredClone(settings);
+  const chat = {
+    messages: [{ role: "user", content: "Scrape the page" }, {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { id: "call-1", type: "function", function: { name: "take_snapshot", arguments: "{}" } },
+        { id: "call-2", type: "function", function: { name: "get_dom", arguments: "{}" } },
+      ],
+    }, {
+      role: "tool",
+      tool_call_id: "call-1",
+      name: "take_snapshot",
+      content: "snapshot result",
+    }],
+  };
+
+  try {
+    setSettings({ ...previousSettings, aiProvider: "openrouter" });
+    const messages = buildApiMessagesForChat(chat);
+    const results = messages.filter((message) => message.role === "tool");
+    assert.deepEqual(results.map((message) => message.tool_call_id), ["call-1", "call-2"]);
+    assert.match(results[1].content, /No result recorded/);
+  } finally {
+    setSettings(previousSettings);
+  }
+});
+
 test("OpenRouter reasoning details replay unchanged around tool calls", () => {
   const previousSettings = structuredClone(settings);
   const reasoningDetails = [{

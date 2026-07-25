@@ -75,7 +75,10 @@ export function modelEndpointsUrl(modelId) {
 }
 
 export async function fetchModelEndpoints(apiKey, modelId) {
-  const response = await fetch(modelEndpointsUrl(modelId), {
+  const url = modelEndpointsUrl(modelId);
+  if (!url) throw new Error(`"${modelId}" is not an OpenRouter model id.`);
+
+  const response = await fetch(url, {
     headers: buildHeaders(apiKey),
   });
 
@@ -164,5 +167,14 @@ export async function fetchChatCompletion(
     throw new Error(`OpenRouter Error (${response.status}): ${errText}`);
   }
 
-  return await response.json();
+  const data = await response.json();
+  // OpenRouter reports rate limits and moderation refusals in the body of a 200.
+  if (data?.error) {
+    const detail = typeof data.error === "string"
+      ? data.error
+      : data.error.message || JSON.stringify(data.error);
+    const code = typeof data.error === "object" && data.error.code ? ` (${data.error.code})` : "";
+    throw new Error(`OpenRouter Error${code}: ${detail}`);
+  }
+  return data;
 }

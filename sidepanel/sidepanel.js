@@ -24,32 +24,38 @@ if (document.readyState === "loading") {
 }
 
 async function init() {
-  try {
-    await loadSettings();
-    await loadGlobalWorkspace();
-    await loadChats();
+  await initStep("settings", loadSettings);
+  await initStep("workspace", loadGlobalWorkspace);
+  await initStep("chats", loadChats);
+  await initStep("MCP tools", () => {
     if (settings.mcpServers.some(s => s.enabled !== false && s.url)) {
       refreshMcpTools().catch((error) => console.warn("Could not load MCP tools:", error));
     }
-    initHistoryDrawer();
-    initSettingsToggle();
-    initModelPicker();
-    for (const section of SETTINGS_SECTIONS) {
-      section.init?.();
-    }
-    initSettingsAutosave();
-    initChatEvents();
-    initUploadEvents();
-    initFileViewer();
-    initNetworkLogs();
-    initUsageBar();
-    initLatchTab();
-    renderWorkspaceStrip();
-    updateModelBadge();
-    refreshProviderBadge();
-    ensureProviderModelsLoaded().then(updateModelBadge).catch(() => {});
+  });
+  await initStep("history drawer", initHistoryDrawer);
+  await initStep("settings toggle", initSettingsToggle);
+  await initStep("model picker", initModelPicker);
+  for (const section of SETTINGS_SECTIONS) {
+    await initStep(`${section.key || "settings"} section`, () => section.init?.());
+  }
+  await initStep("settings autosave", initSettingsAutosave);
+  await initStep("chat events", initChatEvents);
+  await initStep("upload events", initUploadEvents);
+  await initStep("file viewer", initFileViewer);
+  await initStep("network logs", initNetworkLogs);
+  await initStep("usage bar", initUsageBar);
+  await initStep("latch tab", initLatchTab);
+  await initStep("workspace strip", renderWorkspaceStrip);
+  await initStep("model badge", updateModelBadge);
+  await initStep("provider badge", refreshProviderBadge);
+  await initStep("model list", () => ensureProviderModelsLoaded().then(updateModelBadge).catch(() => {}));
+}
+
+async function initStep(label, step) {
+  try {
+    await step();
   } catch (err) {
-    console.error("Initialization error:", err);
+    console.error(`Could not initialize ${label}:`, err);
   }
 }
 
@@ -77,12 +83,11 @@ function initSettingsAutosave() {
 
   settingsForm.addEventListener("change", (event) => {
     if (event.target instanceof HTMLInputElement && event.target.type === "file") return;
-    if (event.target?.id === "data-sharing-consent") {
-      settings.dataSharingConsent = event.target.checked;
-    }
-    updateModelBadge();
-    refreshProviderBadge();
-    scheduleSettingsAutosave({ immediate: true });
+    // Badges read persisted state, so refresh them once the save has applied.
+    scheduleSettingsAutosave({ immediate: true }).then(() => {
+      updateModelBadge();
+      refreshProviderBadge();
+    });
   });
 
   settingsForm.addEventListener("submit", (event) => {

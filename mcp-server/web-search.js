@@ -1,10 +1,10 @@
 // Web search (Tavily) tool definitions for the MCP server.
 //
-// Unlike temp-email, these tools are NOT executed here: the calls are forwarded
-// over the bridge to the extension, which runs the search with the Tavily API
-// key it already holds. This module only owns the tool schemas and a visibility
-// gate driven by the extension's `feature-flags/set` message — so the tools
-// appear to MCP clients only when web search is enabled and keyed in settings.
+// These tools are NOT executed here: the calls are forwarded over the bridge to
+// the extension, which runs the search with the Tavily API key it already
+// holds. This module only owns the tool schemas and a visibility gate driven by
+// the extension's `feature-flags/set` message — so the tools appear to MCP
+// clients only when web search is enabled and keyed in settings.
 
 const state = {
   enabled: false

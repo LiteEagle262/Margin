@@ -46,14 +46,20 @@ function collectProviderRoutingFromUI() {
   const modeInput = document.getElementById("provider-routing-mode");
   const fallbackInput = document.getElementById("provider-allow-fallbacks");
   const providerInputs = Array.from(document.querySelectorAll(".provider-select-input"));
-  const selected = Array.from(document.querySelectorAll(".provider-select-input:checked"))
-    .map(input => normalizeProviderSlug(input.value))
-    .filter(Boolean);
+  const checked = new Set(
+    providerInputs.filter(input => input.checked)
+      .map(input => normalizeProviderSlug(input.value))
+      .filter(Boolean)
+  );
+  // Routing priority follows the order the user picked providers in, not the
+  // alphabetical order the rows happen to render in.
+  const kept = settings.providerRouting.order.filter(slug => checked.has(slug));
+  const added = [...checked].filter(slug => !kept.includes(slug));
 
   return normalizeProviderRoutingSettings({
     enabled: enabledInput ? enabledInput.checked : settings.providerRouting.enabled,
     mode: modeInput ? modeInput.value : settings.providerRouting.mode,
-    order: providerInputs.length ? selected : settings.providerRouting.order,
+    order: providerInputs.length ? [...kept, ...added] : settings.providerRouting.order,
     allowFallbacks: fallbackInput ? fallbackInput.checked : settings.providerRouting.allowFallbacks
   });
 }
