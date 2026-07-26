@@ -22,7 +22,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "browser_batch",
-      description: "Run several browser actions in one tool call instead of one call per action. Use this whenever the next two or more steps are already known — navigate then wait_for then take_snapshot, or fill a form then click submit. Actions run in order and stop at the first failure unless stop_on_error is false. Batchable: navigate, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, take_snapshot, get_dom, get_active_tab, list_tabs, run_js, evaluate_script. take_screenshot, workspace, search, and MCP tools must be called on their own.",
+      description: "Run several browser actions in one tool call instead of one call per action. Use this whenever the next two or more steps are already known — navigate then wait_for then take_snapshot, or fill a form then click submit. Actions run in order and stop at the first failure unless stop_on_error is false. Batchable: navigate, open_tab, select_tab, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, take_snapshot, get_dom, get_active_tab, list_tabs, run_js, evaluate_script. take_screenshot, close_tab, workspace, search, and MCP tools must be called on their own.",
       parameters: {
         type: "object",
         properties: {
@@ -65,7 +65,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "click_element",
-      description: "Click a page element. Prefer uid from take_snapshot. Selector is supported as a fallback. Set include_snapshot to true after actions that should change page state.",
+      description: "Click a page element. Prefer uid from take_snapshot. Selector is supported as a fallback. Set include_snapshot to true after actions that should change page state. The result reports effect {url_changed, dom_mutations} observed ~250ms after the click; a zero effect means the click may not have done anything — re-snapshot before assuming success.",
       parameters: {
         type: "object",
         properties: {
@@ -241,6 +241,49 @@ export const BROWSER_TOOLS = [
           url: { type: "string", description: "Destination URL." }
         },
         required: ["url"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_tab",
+      description: "Open a new browser tab at a URL and return its tab id. Use this for a fresh page alongside the current one; use navigate to reuse the current tab.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Destination http(s) URL." },
+          background: { type: "boolean", description: "Open the tab without switching to it. Defaults to false." }
+        },
+        required: ["url"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "select_tab",
+      description: "Activate a tab by id to change which tab subsequent browser tools act on. Ids come from list_tabs. If the user has latched a tab, tools keep targeting the latched tab until the user unlatches it.",
+      parameters: {
+        type: "object",
+        properties: {
+          tab_id: { type: "number", description: "Tab id from list_tabs or open_tab." }
+        },
+        required: ["tab_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "close_tab",
+      description: "Close a tab by id. Ids come from list_tabs. The tab the user has latched cannot be closed.",
+      parameters: {
+        type: "object",
+        properties: {
+          tab_id: { type: "number", description: "Tab id from list_tabs or open_tab." }
+        },
+        required: ["tab_id"]
       }
     }
   },

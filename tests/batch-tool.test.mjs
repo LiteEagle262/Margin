@@ -114,6 +114,31 @@ test("each action spends one call from the run's tool-call budget", async (t) =>
   assert.match(parsed.stopped_early, /tool-call limit/);
 });
 
+test("open_tab and select_tab batch and settle; close_tab stays standalone", async (t) => {
+  const calls = stubBackground(t);
+  const started = Date.now();
+  const parsed = parse(await executeBatchTool({
+    actions: [
+      { tool: "open_tab", arguments: { url: "https://example.com" } },
+      { tool: "select_tab", arguments: { tab_id: 2 } },
+      { tool: "take_snapshot" }
+    ]
+  }));
+
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.summary, "3/3 ok");
+  assert.deepEqual(calls.map((call) => call.name), ["open_tab", "select_tab", "take_snapshot"]);
+  // Both tab actions settle (400ms each) before the next action runs.
+  assert.ok(Date.now() - started >= 790, "the batch settled after open_tab and select_tab");
+
+  const rejected = parse(await executeBatchTool({
+    actions: [{ tool: "close_tab", arguments: { tab_id: 3 } }]
+  }));
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.results[0].status, "error");
+  assert.match(rejected.results[0].error, /not batchable/);
+});
+
 test("batch size is capped and empty batches are refused", async (t) => {
   stubBackground(t);
   const tooMany = parse(await executeBatchTool({

@@ -51,6 +51,19 @@ test("secret-bearing argument values never appear anywhere in the journal entry"
   assert.equal(entry.args.uid, "sf-input-pw", "allowlisted keys still record alongside secrets");
 });
 
+test("close_tab records which tab it destroyed", () => {
+  const entry = buildJournalEntry({
+    ts: 3,
+    surface: "bridge",
+    tool: "close_tab",
+    host: "example.com",
+    args: { tab_id: 8371634 },
+    outcome: "ok"
+  });
+
+  assert.equal(entry.args.tab_id, 8371634, "the audit journal keeps the closed tab's id verbatim");
+});
+
 test("long allowlisted values truncate to 200 characters", () => {
   const longUrl = `https://example.com/?q=${"a".repeat(500)}`;
   const entry = buildJournalEntry({

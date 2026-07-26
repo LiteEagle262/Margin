@@ -11,15 +11,17 @@ export const BATCH_TOOL_NAME = "browser_batch";
 // enough that one batch cannot consume most of a turn's budget on its own.
 export const MAX_BATCH_ACTIONS = 10;
 
+// close_tab is deliberately not batchable: destructive mid-batch, rare, low value.
 export const BATCHABLE_TOOL_NAMES = new Set([
-  "navigate", "click_element", "fill_element", "fill_form", "fill_secret", "type_text",
-  "hover_element", "press_key", "scroll_page", "wait_for", "take_snapshot",
-  "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script"
+  "navigate", "open_tab", "select_tab", "click_element", "fill_element", "fill_form",
+  "fill_secret", "type_text", "hover_element", "press_key", "scroll_page", "wait_for",
+  "take_snapshot", "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script"
 ]);
 
-// A navigation or a click can still be committing when the next action runs.
-// Exported because recipe replay (recipes.js) reuses the same settle behavior.
-export const SETTLE_AFTER_TOOLS = new Set(["navigate", "click_element"]);
+// A navigation, tab switch, or click can still be committing when the next
+// action runs. Exported because recipe replay (recipes.js) reuses the same
+// settle behavior.
+export const SETTLE_AFTER_TOOLS = new Set(["navigate", "open_tab", "select_tab", "click_element"]);
 export const SETTLE_MS = 400;
 
 // Per-action output is capped so a long batch cannot swallow the context window.

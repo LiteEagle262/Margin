@@ -30,7 +30,7 @@ export const RECIPE_TOOL_SCHEMAS = [
             items: {
               type: "object",
               properties: {
-                tool: { type: "string", description: "Step tool: navigate, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, or fill_secret." },
+                tool: { type: "string", description: "Step tool: navigate, open_tab, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, or fill_secret." },
                 args: { type: "object", description: "Arguments for that tool, exactly as its own schema defines them. String values may contain {{placeholder}} tokens." },
                 element: { type: "object", description: "Optional target descriptor {role, name, tag} used to re-resolve a stale uid at replay time." }
               },
@@ -78,7 +78,13 @@ export const RECIPE_TOOL_NAMES = new Set(RECIPE_TOOL_SCHEMAS.map((tool) => tool.
 // excluded). Computed lazily because batch.js and execute.js form an import
 // cycle with this module, so BATCHABLE_TOOL_NAMES may not exist at eval time.
 const NON_STEP_BATCHABLE = new Set([
-  "take_snapshot", "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script"
+  "take_snapshot", "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script",
+  // select_tab is excluded because its tab_id argument is session-specific and
+  // meaningless on replay — a recorded id will point at a different or dead tab.
+  // close_tab is excluded for the same reason, but it is not batchable, so it
+  // never enters the step set anyway. open_tab IS a valid step: its argument is
+  // a plain url that replays fine.
+  "select_tab"
 ]);
 let stepToolsCache = null;
 function recipeStepTools() {

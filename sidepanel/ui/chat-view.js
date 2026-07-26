@@ -90,6 +90,45 @@ export function getDisplayAttachments(msg) {
   return [...attachments, ...legacyImages];
 }
 
+// Live token stream: a plain-text assistant bubble that shows deltas as they
+// arrive; the run loop removes it before the final markdown render lands.
+// textContent-only appends keep this cheap and XSS-safe. If a chat re-render
+// wipes the bubble (e.g. switching chats and back), it is rebuilt with the
+// full accumulated text.
+export function createStreamingMessage() {
+  let msgDiv = null;
+  let textEl = null;
+  let fullText = "";
+  return {
+    appendText(text) {
+      const chatHistory = document.getElementById("chat-history");
+      if (!chatHistory) return;
+      fullText += text;
+      if (!msgDiv || !msgDiv.isConnected) {
+        msgDiv = document.createElement("div");
+        msgDiv.className = "message assistant streaming-msg";
+        const contentDiv = document.createElement("div");
+        contentDiv.className = "message-content";
+        textEl = document.createElement("div");
+        textEl.className = "message-text streaming-text";
+        contentDiv.appendChild(textEl);
+        msgDiv.appendChild(contentDiv);
+        chatHistory.appendChild(msgDiv);
+        textEl.textContent = fullText;
+      } else {
+        textEl.textContent += text;
+      }
+      chatHistory.scrollTop = chatHistory.scrollHeight;
+    },
+    remove() {
+      msgDiv?.remove();
+      msgDiv = null;
+      textEl = null;
+      fullText = "";
+    },
+  };
+}
+
 export function appendMessageUI(role, content, attachments = [], shouldScroll = true, options = {}) {
   const chatHistory = document.getElementById("chat-history");
   if (!chatHistory) return;

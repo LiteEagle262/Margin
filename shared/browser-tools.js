@@ -57,7 +57,7 @@ async function listOpenTabs() {
   }));
 }
 
-async function navigateActiveTab(url) {
+function parseWebUrl(url) {
   let destination;
   try {
     destination = new URL(url);
@@ -67,6 +67,11 @@ async function navigateActiveTab(url) {
   if (destination.protocol !== "http:" && destination.protocol !== "https:") {
     throw new Error("Margin navigation is limited to http:// and https:// URLs.");
   }
+  return destination;
+}
+
+async function navigateActiveTab(url) {
+  const destination = parseWebUrl(url);
   const tabId = await getActiveTabId();
   if (!tabId) throw new Error("No active tab in current window.");
   await chrome.tabs.update(tabId, { url: destination.href });
@@ -482,12 +487,36 @@ export function pageAgentScript(input) {
   const target = summarize(el);
 
   if (input.action === "click") {
+    // Click verification: a found/visible/enabled element can still be inert
+    // (overlay on top, isTrusted-gated handler). Observe the page for ~250ms
+    // after the click and report what changed. Zero effect is a signal, not
+    // proven failure — async handlers and background state changes are real.
+    const startUrl = location.href;
+    let mutationCount = null;
+    let observer = null;
+    if (typeof MutationObserver !== "undefined") {
+      mutationCount = 0;
+      observer = new MutationObserver((records) => { mutationCount += records.length; });
+      // characterData included: frameworks that update text in place (e.g.
+      // React setting textNode.nodeValue) produce only characterData records.
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+    }
     if (input.dblClick) {
       el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
     } else {
       el.click();
     }
-    return { ok: true, message: "Element clicked.", target };
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        if (observer) observer.disconnect();
+        const effect = { url_changed: location.href !== startUrl, dom_mutations: mutationCount };
+        let message = "Element clicked.";
+        if (!effect.url_changed && effect.dom_mutations === 0) {
+          message += " No observable page change after the click — the element may be inert or intercepted; re-snapshot before assuming success.";
+        }
+        resolve({ ok: true, message, target, effect });
+      }, 250);
+    });
   }
 
   if (input.action === "hover") {
@@ -537,16 +566,35 @@ async function maybeAttachSnapshot(result, args = {}) {
   return result;
 }
 
+// A click that triggers a fast cross-document navigation destroys the injected
+// script's execution context while its ~250ms verification Promise is still
+// pending, so chrome.scripting rejects. That rejection IS the click's effect —
+// the page is gone because the click navigated it — not a failure.
+function isContextDestroyedByNavigation(err) {
+  return /frame (with id \d+ )?was removed|no frame with id|execution context (was )?destroyed/i
+    .test(String((err && err.message) || err));
+}
+
 async function interactWithElement(tool, args = {}, action = "click") {
-  const result = await runScriptInActiveTab(pageAgentScript, [{
-    op: "interact",
-    action,
-    uid: args.uid,
-    selector: args.selector,
-    value: args.value,
-    text: args.text,
-    dblClick: args.dblClick === true
-  }]);
+  let result;
+  try {
+    result = await runScriptInActiveTab(pageAgentScript, [{
+      op: "interact",
+      action,
+      uid: args.uid,
+      selector: args.selector,
+      value: args.value,
+      text: args.text,
+      dblClick: args.dblClick === true
+    }]);
+  } catch (err) {
+    if (action === "click" && isContextDestroyedByNavigation(err)) {
+      const navigated = toolOk(tool, "Element clicked. The click triggered a navigation that unloaded the page before verification finished; take a snapshot of the new page before further element actions.");
+      navigated.data.effect = { url_changed: true, dom_mutations: null };
+      return navigated;
+    }
+    throw err;
+  }
 
   if (!result || result.ok !== true) {
     return toolError(tool, result?.error_code || "action_failed", result?.message || "Element action failed.", {
@@ -558,6 +606,7 @@ async function interactWithElement(tool, args = {}, action = "click") {
     });
   }
   const success = toolOk(tool, result.message, { target: result.target, value: result.value });
+  if (result.effect) success.data.effect = result.effect;
   if (result.target) {
     success.element = { role: result.target.role, name: result.target.name, tag: result.target.tag };
   }
@@ -850,6 +899,74 @@ export async function executePageTool(name, args = {}) {
       case "navigate": {
         if (!args.url) return toolError(name, "missing_url", "navigate requires url.", { recoverable: false });
         return await navigateActiveTab(String(args.url));
+      }
+
+      case "open_tab": {
+        if (!args.url) return toolError(name, "missing_url", "open_tab requires url.", { recoverable: false });
+        const destination = parseWebUrl(String(args.url));
+        const tab = await chrome.tabs.create({ url: destination.href, active: args.background !== true });
+        const result = { ok: true, tab_id: tab.id, url: destination.href };
+        // Same trap select_tab warns about: a latch keeps every page tool on
+        // the latched tab, so the fresh tab is visible but never acted on.
+        const latched = await getLatchedTabRecord();
+        if (latched) {
+          result.warning = `A tab latch is set: browser tools remain latched to tab ${latched.tabId} (${latched.title || latched.url}) until the user unlatches it. The new tab was opened, but tools will keep acting on the latched tab, not the new one.`;
+        }
+        return JSON.stringify(result, null, 2);
+      }
+
+      case "select_tab": {
+        const tabId = Number(args.tab_id);
+        if (!Number.isInteger(tabId)) {
+          return toolError(name, "invalid_tab_id", "select_tab requires a numeric tab_id from list_tabs.", { recoverable: false });
+        }
+        let tab;
+        try {
+          tab = await chrome.tabs.get(tabId);
+        } catch {
+          return toolError(name, "unknown_tab_id", `No tab with id ${tabId}.`, {
+            next_actions: [{ tool: "list_tabs", reason: "Get current tab ids." }]
+          });
+        }
+        await chrome.tabs.update(tabId, { active: true });
+        const win = await chrome.windows.get(tab.windowId);
+        if (!win.focused) await chrome.windows.update(tab.windowId, { focused: true });
+        // The latch is user-owned UI state: selecting a tab never moves or
+        // clears it, so tools keep targeting the latched tab until unlatched.
+        const latched = await getLatchedTabRecord();
+        const result = { ok: true, tab_id: tabId, url: tab.url || "", title: tab.title || "" };
+        if (latched && latched.tabId !== tabId) {
+          result.warning = `A tab latch is set: browser tools remain latched to tab ${latched.tabId} (${latched.title || latched.url}) until the user unlatches it. Selecting this tab changed what the user sees, not what tools act on.`;
+        }
+        return JSON.stringify(result, null, 2);
+      }
+
+      case "close_tab": {
+        const tabId = Number(args.tab_id);
+        if (!Number.isInteger(tabId)) {
+          return toolError(name, "invalid_tab_id", "close_tab requires a numeric tab_id from list_tabs.", { recoverable: false });
+        }
+        const latched = await getLatchedTabRecord();
+        if (latched && latched.tabId === tabId) {
+          return toolError(name, "tab_latched", `Tab ${tabId} is latched by the user and will not be closed. Ask the user to unlatch it first.`, { recoverable: false });
+        }
+        try {
+          await chrome.tabs.get(tabId);
+        } catch {
+          return toolError(name, "unknown_tab_id", `No tab with id ${tabId}.`, {
+            next_actions: [{ tool: "list_tabs", reason: "Get current tab ids." }]
+          });
+        }
+        // Snapshot the tool target before closing: with no latch, closing the
+        // active tab silently retargets every subsequent tool to whichever
+        // neighbor Chrome activates, so the result must say so.
+        const targetTabId = await getActiveTabId();
+        await chrome.tabs.remove(tabId);
+        const result = { ok: true, tab_id: tabId, closed: true };
+        if (tabId === targetTabId) {
+          result.warning = "The closed tab was the tab browser tools were targeting. Tools now follow whichever tab the browser activated instead; run get_active_tab before further page actions.";
+        }
+        return JSON.stringify(result, null, 2);
       }
 
       case "take_snapshot": {

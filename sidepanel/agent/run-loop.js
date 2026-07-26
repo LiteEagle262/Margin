@@ -27,7 +27,13 @@ import {
   refreshMcpTools,
 } from "../tools/execute.js";
 import { recordStep, resetRecording } from "../tools/recipes.js";
-import { appendMessageUI, extractReasoningText, sanitizeToolDisplay } from "../ui/chat-view.js";
+import {
+  appendMessageUI,
+  createStreamingMessage,
+  extractReasoningText,
+  getDisplayAttachments,
+  sanitizeToolDisplay,
+} from "../ui/chat-view.js";
 import { setSendButtonMode } from "../ui/composer.js";
 import { recordUsageForChat } from "../ui/usage-bar.js";
 import { refreshProviderBadge } from "../ui/model-picker.js";
@@ -61,6 +67,48 @@ function addLoadingIndicator(chatId) {
   history.appendChild(loading);
   history.scrollTop = history.scrollHeight;
   return loading;
+}
+
+// Owns the "waiting" UI for one provider call: the 3-dot indicator until the
+// first token, then a live plain-text bubble. Streaming is display-only — the
+// final response object drives the real render, which replaces the bubble.
+// Exported for tests only.
+export function createStreamView(chatId, loading) {
+  const stream = createStreamingMessage();
+  let started = false;
+  // Deltas that arrive while another chat is displayed buffer here so the
+  // bubble rebuilds with the full text when the user switches back; only the
+  // DOM work is gated on visibility.
+  let pending = "";
+  return {
+    append(text) {
+      if (typeof text !== "string" || !text) return;
+      pending += text;
+      if (!visibleChat(chatId)) return;
+      if (!started) {
+        loading?.remove();
+        loading = null;
+        started = true;
+      }
+      stream.appendText(pending);
+      pending = "";
+    },
+    // A retry restarts the provider call: drop partial text, show dots again.
+    reset() {
+      stream.remove();
+      pending = "";
+      if (started) {
+        loading = addLoadingIndicator(chatId);
+        started = false;
+      }
+    },
+    // Final response, error, or abort: the bubble must never outlive the call.
+    finish() {
+      stream.remove();
+      loading?.remove();
+      loading = null;
+    },
+  };
 }
 
 export function beginAgentRun(chatId = currentChatId) {
@@ -149,15 +197,17 @@ function abortableDelay(ms, signal) {
   });
 }
 
-async function fetchCompletionWithRetry(requestBody, chatId) {
+async function fetchCompletionWithRetry(requestBody, chatId, streamView) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fetchProviderChatCompletion(settings.aiProvider, settings.apiKey, requestBody, {
         signal: agentAbortController?.signal,
         sessionId: chatId,
+        onDelta: streamView.append,
       });
     } catch (error) {
       if (attempt >= PROVIDER_RETRY_DELAYS_MS.length || !isRetryableProviderError(error)) throw error;
+      streamView.reset();
       console.warn(`Provider request failed (attempt ${attempt + 1}), retrying:`, error);
       await abortableDelay(PROVIDER_RETRY_DELAYS_MS[attempt], agentAbortController?.signal);
       if (agentStopRequested || agentAbortController?.signal?.aborted) throw error;
@@ -196,8 +246,16 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
     }
   }
 
-  const data = await fetchCompletionWithRetry(requestBody, chatId);
-  loading?.remove();
+  const streamView = createStreamView(chatId, loading);
+  let data;
+  try {
+    data = await fetchCompletionWithRetry(requestBody, chatId, streamView);
+  } finally {
+    // Tool-calls-only responses may have streamed nothing; abort and error
+    // paths may have streamed partial text. Either way the bubble goes now —
+    // the classified response below is rendered through the normal path.
+    streamView.finish();
+  }
   if (!Array.isArray(data.choices) || data.choices.length === 0) {
     throw new Error("The provider returned no completion choices.");
   }
@@ -372,11 +430,15 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
   }
 
   if (screenshots.length > 0) {
-    chat.messages.push({
+    const messageIndex = chat.messages.push({
       role: "user",
       content: "Screenshots captured by the requested browser tools:",
       images: screenshots,
-    });
+    }) - 1;
+    // Show the captures immediately — the same way renderChatHistory replays
+    // this stored message — so the user sees what the agent saw, when it did.
+    const stored = chat.messages[messageIndex];
+    appendForChat(chatId, "user", stored.content, getDisplayAttachments(stored), { messageIndex });
   }
   await saveChats();
   if (!agentStopRequested) {

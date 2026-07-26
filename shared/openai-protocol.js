@@ -440,6 +440,64 @@ export function buildOpenAIResponsesRequest(requestBody) {
   return request;
 }
 
+// Incremental SSE scanner: feed decoded text pieces as they arrive and get
+// back the frames ({event, data}) completed so far. Frames can span network
+// chunks, so parser state persists between calls. Comment lines (":…") and
+// frames without data are dropped, matching parseSseEvents.
+export function createSseDataScanner() {
+  let pending = "";
+  let eventName = "";
+  let dataLines = [];
+  return function scan(text) {
+    pending += String(text ?? "");
+    // Hold back a trailing "\r" — it may be the first half of a CRLF pair.
+    let heldBack = "";
+    if (pending.endsWith("\r")) {
+      heldBack = "\r";
+      pending = pending.slice(0, -1);
+    }
+    const lines = pending.split(/\r\n|\n|\r/);
+    pending = lines.pop() + heldBack;
+    const frames = [];
+    for (const line of lines) {
+      if (line === "") {
+        if (dataLines.length) frames.push({ event: eventName, data: dataLines.join("\n") });
+        eventName = "";
+        dataLines = [];
+        continue;
+      }
+      if (line.startsWith("event:")) eventName = line.slice(6).trim();
+      if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    }
+    return frames;
+  };
+}
+
+// Display-only extraction of assistant-visible text deltas from a live Codex
+// SSE stream. Reasoning summaries and tool-call arguments never stream; the
+// buffered end-of-stream parse (parseOpenAIResponseBody) stays authoritative,
+// so malformed frames are skipped here instead of throwing.
+export function createOpenAIStreamDeltaScanner() {
+  const scan = createSseDataScanner();
+  return function extractTextDeltas(text) {
+    const deltas = [];
+    for (const frame of scan(text)) {
+      if (frame.data === "[DONE]") continue;
+      let event;
+      try {
+        event = JSON.parse(frame.data);
+      } catch {
+        continue;
+      }
+      const type = event?.type || frame.event;
+      if (type === "response.output_text.delta" && typeof event?.delta === "string" && event.delta) {
+        deltas.push(event.delta);
+      }
+    }
+    return deltas;
+  };
+}
+
 export function parseSseEvents(text) {
   const events = [];
   const frames = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split(/\n\n+/);

@@ -82,6 +82,42 @@ test("the recorder keeps only successful action steps and strips include_snapsho
   resetRecording();
 });
 
+test("open_tab records and replays as a step; select_tab and close_tab never do", async () => {
+  // Session tab ids are meaningless on replay, so neither tab-pointing tool may
+  // enter a recipe — recorded or explicit. open_tab takes a plain url and is fine.
+  resetRecording();
+  recordStep("select_tab", { tab_id: 5 }, JSON.stringify({ ok: true }));
+  recordStep("close_tab", { tab_id: 5 }, JSON.stringify({ ok: true }));
+  const empty = JSON.parse(await executeRecipeTool("save_recipe", { name: "tab moves" }));
+  assert.equal(empty.ok, false);
+  assert.equal(empty.error_code, "nothing_recorded");
+
+  recordStep("open_tab", { url: "https://example.com/app" }, JSON.stringify({ ok: true }));
+  const saved = JSON.parse(await executeRecipeTool("save_recipe", { name: "open flow" }));
+  assert.equal(saved.ok, true);
+  assert.equal(saved.step_count, 1);
+  assert.deepEqual(JSON.parse(getWorkspaceFile(saved.path).content).steps[0], {
+    tool: "open_tab",
+    args: { url: "https://example.com/app" },
+    element: null
+  });
+  resetRecording();
+
+  const selectSteps = JSON.parse(await executeRecipeTool("save_recipe", {
+    name: "explicit select",
+    steps: [{ tool: "select_tab", args: { tab_id: 5 } }]
+  }));
+  assert.equal(selectSteps.error_code, "invalid_steps");
+  assert.match(selectSteps.message, /select_tab/);
+
+  const closeSteps = JSON.parse(await executeRecipeTool("save_recipe", {
+    name: "explicit close",
+    steps: [{ tool: "close_tab", args: { tab_id: 5 } }]
+  }));
+  assert.equal(closeSteps.error_code, "invalid_steps");
+  assert.match(closeSteps.message, /close_tab/);
+});
+
 test("recording caps at 40 steps, keeps the earliest, and warns on save", async () => {
   resetRecording();
   for (let i = 0; i < 45; i += 1) {

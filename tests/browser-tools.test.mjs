@@ -91,7 +91,7 @@ function snapshot(nodes) {
   return pageAgentScript({ op: "snapshot", limit: 80, verbose: false });
 }
 
-test("a snapshot uid resolves to the same element when hidden nodes precede it", () => {
+test("a snapshot uid resolves to the same element when hidden nodes precede it", async () => {
   const hiddenInput = element("input", { hidden: true, attrs: { type: "hidden" } });
   const hiddenBox = element("div", { hidden: true, attrs: { role: "button" }, innerText: "Ghost" });
   const submit = element("button", { innerText: "Submit order" });
@@ -101,7 +101,9 @@ test("a snapshot uid resolves to the same element when hidden nodes precede it",
   assert.equal(result.element_count, 1, "invisible nodes stay out of the snapshot");
 
   const uid = result.elements[0].uid;
-  const clicked = pageAgentScript({ op: "interact", action: "click", uid });
+  // Clicks now return a Promise: the injected script waits ~250ms observing
+  // navigation/DOM effects before reporting.
+  const clicked = await pageAgentScript({ op: "interact", action: "click", uid });
 
   assert.equal(clicked.ok, true);
   assert.equal(clicked.target.uid, uid);
@@ -152,6 +154,117 @@ test("an unresolved uid returns usable candidates instead of an empty list", () 
   for (const candidate of result.candidates) {
     assert.match(candidate.uid, /^sf-button-/);
   }
+});
+
+// Click verification observes the page for ~250ms after the click, so these
+// tests each take that long in real time. The stub observer records what the
+// injected code wires up and lets a test inject mutation records by hand.
+function installMutationObserver(t) {
+  const observers = [];
+  globalThis.MutationObserver = class {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnected = false;
+      observers.push(this);
+    }
+    observe(target, options) {
+      this.target = target;
+      this.options = options;
+    }
+    disconnect() {
+      this.disconnected = true;
+    }
+  };
+  t.after(() => { delete globalThis.MutationObserver; });
+  return observers;
+}
+
+test("a click reports the DOM mutations observed after it", async (t) => {
+  const observers = installMutationObserver(t);
+  const button = element("button", { innerText: "Add row" });
+  const uid = snapshot([button]).elements[0].uid;
+  globalThis.document.documentElement = {};
+
+  // The click fires synchronously; the effect resolves after the observation window.
+  const pending = pageAgentScript({ op: "interact", action: "click", uid });
+  assert.equal(button.clicks, 1);
+  observers[0].callback([{}, {}]);
+  const clicked = await pending;
+
+  assert.equal(clicked.ok, true);
+  assert.deepEqual(clicked.effect, { url_changed: false, dom_mutations: 2 });
+  assert.equal(clicked.message, "Element clicked.", "an effective click carries no warning");
+  assert.equal(observers[0].disconnected, true, "the observer stops when the window closes");
+  assert.equal(observers[0].options.characterData, true, "in-place text-node updates count as effects");
+});
+
+test("a click that only changes the URL still counts as effective", async (t) => {
+  installMutationObserver(t);
+  const link = element("a", { innerText: "Next page", attrs: { href: "/next" } });
+  link.click = () => { globalThis.location.href = "https://example.com/next"; };
+  const uid = snapshot([link]).elements[0].uid;
+  globalThis.document.documentElement = {};
+
+  const clicked = await pageAgentScript({ op: "interact", action: "click", uid });
+
+  assert.equal(clicked.ok, true);
+  assert.deepEqual(clicked.effect, { url_changed: true, dom_mutations: 0 });
+  assert.equal(clicked.message, "Element clicked.");
+});
+
+test("a zero-effect click stays ok but appends the inert-element warning", async (t) => {
+  installMutationObserver(t);
+  const button = element("button", { innerText: "Do nothing" });
+  const uid = snapshot([button]).elements[0].uid;
+  globalThis.document.documentElement = {};
+
+  const clicked = await pageAgentScript({ op: "interact", action: "click", uid });
+
+  assert.equal(clicked.ok, true, "zero effect is a signal, never a failure");
+  assert.equal(button.clicks, 1);
+  assert.deepEqual(clicked.effect, { url_changed: false, dom_mutations: 0 });
+  assert.match(clicked.message, /^Element clicked\./);
+  assert.match(clicked.message, /may be inert or intercepted; re-snapshot/);
+});
+
+test("without MutationObserver the effect degrades to null and never warns", async () => {
+  assert.equal(globalThis.MutationObserver, undefined, "Node provides no MutationObserver");
+  const button = element("button", { innerText: "Do nothing" });
+  const uid = snapshot([button]).elements[0].uid;
+
+  const clicked = await pageAgentScript({ op: "interact", action: "click", uid });
+
+  assert.equal(clicked.ok, true);
+  assert.deepEqual(clicked.effect, { url_changed: false, dom_mutations: null });
+  assert.equal(clicked.message, "Element clicked.", "unknown mutations suppress the inert warning");
+});
+
+test("a click whose navigation destroys the script context is a success, not a failure", async (t) => {
+  // A fast cross-document navigation during the 250ms verify window tears down
+  // the ISOLATED world, so chrome.scripting rejects mid-click.
+  globalThis.chrome.tabs.query = async () => [{ id: 7, url: "https://example.com/form", title: "Test page", windowId: 1 }];
+  globalThis.chrome.scripting = {
+    executeScript: async () => { throw new Error("Frame with ID 0 was removed."); }
+  };
+  t.after(() => { delete globalThis.chrome.scripting; });
+
+  const clicked = await executePageTool("click_element", { uid: "sf-a-abc123" });
+  assert.equal(clicked.ok, true);
+  assert.deepEqual(clicked.data.effect, { url_changed: true, dom_mutations: null });
+  assert.match(clicked.message, /triggered a navigation/);
+  assert.match(clicked.message, /take a snapshot of the new page/);
+
+  // Other injection failures still surface as errors.
+  globalThis.chrome.scripting.executeScript = async () => { throw new Error("Cannot access contents of the page."); };
+  const failed = await executePageTool("click_element", { uid: "sf-a-abc123" });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error_code, "tool_execution_failed");
+
+  // Non-click interactions never get the navigation pardon.
+  globalThis.chrome.scripting.executeScript = async () => { throw new Error("Frame with ID 0 was removed."); };
+  const filled = await executePageTool("fill_element", { uid: "sf-input-abc123", value: "x" });
+  assert.equal(filled.ok, false);
+  assert.equal(filled.error_code, "tool_execution_failed");
 });
 
 test("page tools report failure through the ok:false envelope, never a string prefix", async () => {

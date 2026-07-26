@@ -13,6 +13,7 @@ import {
   getPublicOpenAIAccount,
   normalizeDeviceAuthorization,
   normalizeOpenAIModelsResponse,
+  createOpenAIStreamDeltaScanner,
   normalizeOpenAITokens,
   parseOpenAIResponseBody,
   sanitizeOpenAIErrorBody,
@@ -37,7 +38,7 @@ function formBody(values) {
   return new URLSearchParams(values).toString();
 }
 
-async function readBoundedResponse(response, maxBytes = MAX_RESPONSE_BYTES) {
+async function readBoundedResponse(response, maxBytes = MAX_RESPONSE_BYTES, onText = null) {
   if (!response.body?.getReader) {
     const text = await response.text();
     if (new TextEncoder().encode(text).byteLength > maxBytes) {
@@ -46,6 +47,14 @@ async function readBoundedResponse(response, maxBytes = MAX_RESPONSE_BYTES) {
     return text;
   }
 
+  // onText is a display-only tap: it sees each decoded piece as it arrives,
+  // and its failures must never disturb the buffered read.
+  const notify = (piece) => {
+    if (!onText || !piece) return;
+    try {
+      onText(piece);
+    } catch {}
+  };
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let output = "";
@@ -58,9 +67,13 @@ async function readBoundedResponse(response, maxBytes = MAX_RESPONSE_BYTES) {
       await reader.cancel();
       throw new Error("OpenAI returned a response larger than Margin can safely process.");
     }
-    output += decoder.decode(value, { stream: true });
+    const piece = decoder.decode(value, { stream: true });
+    output += piece;
+    notify(piece);
   }
-  return output + decoder.decode();
+  const tail = decoder.decode();
+  notify(tail);
+  return output + tail;
 }
 
 async function responseError(response, label) {
@@ -455,7 +468,7 @@ async function fetchOpenAIResponse(request, sessionId, signal, forceRefresh = fa
   });
 }
 
-export async function requestOpenAICompletion(requestBody, { signal, sessionId = "" } = {}) {
+export async function requestOpenAICompletion(requestBody, { signal, sessionId = "", onDelta } = {}) {
   const serialized = JSON.stringify(requestBody);
   if (new TextEncoder().encode(serialized).byteLength > MAX_REQUEST_BYTES) {
     throw new Error("The OpenAI request is too large. Remove attachments or older context and try again.");
@@ -464,7 +477,16 @@ export async function requestOpenAICompletion(requestBody, { signal, sessionId =
   let response = await fetchOpenAIResponse(request, sessionId, signal, false);
   if (response.status === 401) response = await fetchOpenAIResponse(request, sessionId, signal, true);
   if (!response.ok) throw await responseError(response, "OpenAI response failed");
-  const body = await readBoundedResponse(response);
+  // Streaming is display-only: deltas are forwarded as they arrive, but the
+  // fully buffered body below remains the authoritative response.
+  let onText = null;
+  if (typeof onDelta === "function") {
+    const extractTextDeltas = createOpenAIStreamDeltaScanner();
+    onText = (piece) => {
+      for (const text of extractTextDeltas(piece)) onDelta(text);
+    };
+  }
+  const body = await readBoundedResponse(response, MAX_RESPONSE_BYTES, onText);
   return parseOpenAIResponseBody(body, response.headers.get("content-type") || "");
 }
 
@@ -510,6 +532,7 @@ export function handleOpenAIResponsePort(port) {
         const result = await requestOpenAICompletion(message.body, {
           signal: controller.signal,
           sessionId: String(message.sessionId || ""),
+          onDelta: (text) => safePost(port, { type: "delta", text }),
         });
         safePost(port, { type: "result", result });
       } catch (error) {

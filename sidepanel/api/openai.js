@@ -47,7 +47,7 @@ export function fetchOpenAIModels() {
   return runtimeRequest({ type: "openai-oauth/models" });
 }
 
-export function fetchOpenAIChatCompletion(requestBody, { signal, sessionId = "" } = {}) {
+export function fetchOpenAIChatCompletion(requestBody, { signal, sessionId = "", onDelta } = {}) {
   return new Promise((resolve, reject) => {
     const port = chrome.runtime.connect({ name: "openai-responses" });
     let settled = false;
@@ -78,6 +78,16 @@ export function fetchOpenAIChatCompletion(requestBody, { signal, sessionId = "" 
     };
 
     port.onMessage.addListener((message) => {
+      // Display-only token stream; the authoritative payload is the final
+      // {type:"result"} message.
+      if (message?.type === "delta") {
+        if (!settled && typeof message.text === "string" && message.text && typeof onDelta === "function") {
+          try {
+            onDelta(message.text);
+          } catch {}
+        }
+        return;
+      }
       if (message?.type === "result") {
         succeed(message.result);
         return;

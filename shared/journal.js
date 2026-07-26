@@ -6,8 +6,10 @@ export const MAX_JOURNAL_ENTRIES = 300;
 // Only these argument values are safe to record verbatim. Every other field is
 // recorded as its length only — fill_element args carry passwords and
 // get_authenticator_code results carry codes, so values must never be stored.
+// tab_id is a non-sensitive session-scoped integer, and it is the only record
+// of which tab a select_tab/close_tab actually targeted.
 const ARG_KEY_ALLOWLIST = new Set([
-  "url", "uid", "selector", "method", "direction", "type", "key", "path", "name", "query"
+  "url", "uid", "selector", "method", "direction", "type", "key", "path", "name", "query", "tab_id"
 ]);
 
 const MAX_ARG_VALUE_CHARS = 200;
