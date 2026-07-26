@@ -36,7 +36,7 @@ const TOOL_ACCESS_GROUPS = [
   {
     id: "auth",
     label: "Authenticator",
-    tools: ["get_authenticator_code", "list_authenticator_domains"]
+    tools: ["get_authenticator_code", "fill_secret", "list_authenticator_domains"]
   }
 ];
 
@@ -47,6 +47,7 @@ const RISKY_DEFAULT_OFF = new Set([
   "clear_network_logs",
   "delete_file",
   "evaluate_script",
+  "fill_secret",
   "get_authenticator_code",
   "get_cookies",
   "get_network_log_detail",
@@ -105,6 +106,7 @@ const TOOL_LABELS = {
   rename_file: "Rename file",
   delete_file: "Delete file",
   get_authenticator_code: "Authenticator code",
+  fill_secret: "Fill authenticator code",
   list_authenticator_domains: "Authenticator domains",
   http_request: "HTTP request",
   get_cookies: "Read cookies",

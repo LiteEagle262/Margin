@@ -6,6 +6,7 @@ import { BUILT_IN_TOOL_NAMES, isBuiltInToolEnabled } from "../settings/sections/
 import { getMaxToolCalls } from "../settings/sections/agent-limits.js";
 import { executeWorkspaceTool } from "../features/workspace.js";
 import { BATCH_TOOL_NAME, executeBatchTool } from "./batch.js";
+import { RECIPE_TOOL_NAMES, RECIPE_TOOL_SCHEMAS, executeRecipeTool } from "./recipes.js";
 
 const TOOL_LOOP_LIMITS = {
   sameFailure: 2,
@@ -84,6 +85,10 @@ export function getAllAgentTools() {
     ...filterEnabledToolSchemas(WORKSPACE_TOOLS),
     ...filterEnabledToolSchemas(WEB_SEARCH_TOOLS),
     ...filterEnabledToolSchemas(RECON_TOOLS),
+    // Recipe tools are panel-only and not in the tool-access groups, so the
+    // enablement filter (which drops unknown names) must not apply to them.
+    // Recipe steps re-enter executeTool, where per-tool gates do apply.
+    ...RECIPE_TOOL_SCHEMAS,
     ...getMcpToolSchemas()
   ];
 }
@@ -183,6 +188,10 @@ export async function executeTool(name, args = {}, surface = "panel") {
     // Actions re-enter here, so each one hits the same access gate, loop guards,
     // and dispatch a standalone call would.
     return executeBatchTool(args, surface);
+  }
+  if (RECIPE_TOOL_NAMES.has(name)) {
+    // run_recipe steps re-enter here too, so gates and budget apply per step.
+    return executeRecipeTool(name, args, surface);
   }
   if (WORKSPACE_TOOL_NAMES.has(name)) {
     return executeWorkspaceTool(name, args);

@@ -324,8 +324,22 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "get_authenticator_code",
-      description: "Generate a current 6-digit TOTP authenticator code from the saved manual key for the active tab's hostname. Codes for other sites cannot be generated; navigate the tab there first.",
+      description: "Generate a current 6-digit TOTP authenticator code from the saved manual key for the active tab's hostname and return it as text, for cases where the code must go somewhere other than the current page. For entering the code into the page, prefer fill_secret. Codes for other sites cannot be generated; navigate the tab there first.",
       parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "fill_secret",
+      description: "Fill the current TOTP authenticator code for the active tab's saved domain directly into a page element — the code is never shown to the model. Prefer this over get_authenticator_code whenever the goal is entering the code into the page.",
+      parameters: {
+        type: "object",
+        properties: {
+          uid: { type: "string", description: "Element uid of the code input from the latest take_snapshot result." }
+        },
+        required: ["uid"]
+      }
     }
   },
   {

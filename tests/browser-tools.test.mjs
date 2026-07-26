@@ -357,6 +357,155 @@ test("wait_for success attaches a snapshot only when include_snapshot is true", 
   assert.equal(withSnapshot.data.snapshot.element_count, 1, "opting in attaches a snapshot");
 });
 
+// ---- fill_secret: the code goes page-ward only -----------------------------
+// The expected TOTP is computed independently here so the tests can assert the
+// code the tool actually minted appears nowhere in what the model sees.
+
+const TEST_TOTP_SEED = "JBSWY3DPEHPK3PXP";
+
+function decodeBase32ForTest(secret) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  const bytes = [];
+  for (const char of secret.replace(/=+$/g, "")) {
+    bits += alphabet.indexOf(char).toString(2).padStart(5, "0");
+    while (bits.length >= 8) {
+      bytes.push(parseInt(bits.slice(0, 8), 2));
+      bits = bits.slice(8);
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
+async function expectedTotp(seed, now = Date.now()) {
+  const counter = Math.floor(now / 1000 / 30);
+  const counterBytes = new ArrayBuffer(8);
+  new DataView(counterBytes).setUint32(4, counter, false);
+  const key = await crypto.subtle.importKey("raw", decodeBase32ForTest(seed), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, counterBytes));
+  const offset = digest[digest.length - 1] & 0x0f;
+  const binary = ((digest[offset] & 0x7f) << 24) | ((digest[offset + 1] & 0xff) << 16) | ((digest[offset + 2] & 0xff) << 8) | (digest[offset + 3] & 0xff);
+  return String(binary % 1e6).padStart(6, "0");
+}
+
+// Points the auth tools at a login.example.com tab whose saved key lives under
+// the parent domain, so success also proves longest-suffix scoping. Returns a
+// restore function.
+function stubAuthenticatorTab() {
+  stubScriptingInActiveTab();
+  globalThis.chrome.tabs.query = async () => [{ id: 7, url: "https://login.example.com/2fa", title: "2FA", windowId: 1 }];
+  const originalGet = globalThis.chrome.storage.local.get;
+  globalThis.chrome.storage.local.get = async () => ({ authManualKeys: { "example.com": TEST_TOTP_SEED } });
+  return () => { globalThis.chrome.storage.local.get = originalGet; };
+}
+
+// The mint can land in the 30s window of either surrounding computation, so a
+// wrapped call returns both codes the tool could have produced.
+async function runWithExpectedCodes(run) {
+  const before = await expectedTotp(TEST_TOTP_SEED);
+  const result = await run();
+  const after = await expectedTotp(TEST_TOTP_SEED);
+  return { result, codes: [...new Set([before, after])] };
+}
+
+test("fill_secret fills the current code into the page but never returns it", async () => {
+  const field = element("input", { placeholder: "One-time code", selector: "#otp" });
+  const uid = snapshot([field]).elements[0].uid;
+  const restore = stubAuthenticatorTab();
+  try {
+    const { result, codes } = await runWithExpectedCodes(
+      () => executePageTool("fill_secret", { uid, include_snapshot: true })
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.filled, true);
+    assert.equal(result.domain, "example.com", "the matched saved domain, via longest-suffix scoping");
+    assert.deepEqual(result.element, { role: "textbox", name: "One-time code", tag: "input" });
+    assert.match(field.value, /^\d{6}$/, "a six-digit code reached the input");
+    assert.ok(codes.includes(field.value), "the filled value is the current TOTP code");
+
+    const serialized = JSON.stringify(result);
+    for (const code of codes) {
+      assert.ok(!serialized.includes(code), "the code appears nowhere in the result");
+    }
+    assert.equal(result.data, undefined, "include_snapshot is dropped so no snapshot can capture the field");
+  } finally {
+    restore();
+  }
+});
+
+test("fill_secret target_not_found returns usable candidates and no code", async () => {
+  const field = element("input", { placeholder: "One-time code", selector: "#otp" });
+  installDom([field]);
+  const restore = stubAuthenticatorTab();
+  try {
+    const { result, codes } = await runWithExpectedCodes(
+      () => executePageTool("fill_secret", { uid: "sf-input-zzzzzz" })
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, "target_not_found");
+    assert.ok(result.data.candidates.length > 0);
+    for (const candidate of result.data.candidates) {
+      assert.match(candidate.uid, /^sf-input-/);
+      assert.equal(candidate.role, "textbox");
+      assert.equal(candidate.name, "One-time code");
+    }
+
+    const serialized = JSON.stringify(result);
+    for (const code of codes) {
+      assert.ok(!serialized.includes(code), "the minted code stays out of the failure too");
+    }
+    assert.equal(field.value, undefined, "nothing was filled");
+  } finally {
+    restore();
+  }
+});
+
+test("fill_secret value_not_applied is generic and echoes no field value", async () => {
+  const rejecting = element("input", { placeholder: "One-time code" });
+  Object.defineProperty(rejecting, "value", {
+    get() { return ""; },
+    set() {},
+    configurable: true
+  });
+  const uid = snapshot([rejecting]).elements[0].uid;
+  const restore = stubAuthenticatorTab();
+  try {
+    const { result, codes } = await runWithExpectedCodes(
+      () => executePageTool("fill_secret", { uid })
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, "value_not_applied");
+    assert.equal(result.message, "Element did not accept the authenticator code.");
+
+    const serialized = JSON.stringify(result);
+    for (const code of codes) {
+      assert.ok(!serialized.includes(code), "the code appears in neither message nor data");
+    }
+  } finally {
+    restore();
+  }
+});
+
+test("successful uid interactions report the element they touched", async () => {
+  const button = element("button", { innerText: "Save" });
+  const buttonUid = snapshot([button]).elements[0].uid;
+  stubScriptingInActiveTab();
+
+  const clicked = await executePageTool("click_element", { uid: buttonUid });
+  assert.equal(clicked.ok, true);
+  assert.deepEqual(clicked.element, { role: "button", name: "Save", tag: "button" });
+  assert.deepEqual(Object.keys(clicked.element), ["role", "name", "tag"], "exactly the recorder's three keys");
+
+  const field = element("input", { placeholder: "Email", selector: "#email" });
+  const fieldUid = snapshot([field]).elements[0].uid;
+  const filled = await executePageTool("fill_element", { uid: fieldUid, value: "a@b.com" });
+  assert.equal(filled.ok, true);
+  assert.deepEqual(filled.element, { role: "textbox", name: "Email", tag: "input" });
+});
+
 test("long action output is truncated so a batch cannot flood the context", async () => {
   recordBackgroundCalls(() => "x".repeat(50000));
   const parsed = JSON.parse(await executeBatchTool({

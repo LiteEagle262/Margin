@@ -26,6 +26,7 @@ import {
   guardToolCallBeforeExecution,
   refreshMcpTools,
 } from "../tools/execute.js";
+import { recordStep, resetRecording } from "../tools/recipes.js";
 import { appendMessageUI, extractReasoningText, sanitizeToolDisplay } from "../ui/chat-view.js";
 import { setSendButtonMode } from "../ui/composer.js";
 import { recordUsageForChat } from "../ui/usage-bar.js";
@@ -64,6 +65,7 @@ function addLoadingIndicator(chatId) {
 
 export function beginAgentRun(chatId = currentChatId) {
   beginAgentRunState(chatId);
+  resetRecording();
   setSendButtonMode("stop");
 }
 
@@ -333,6 +335,8 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
     }
 
     const serialized = serializeToolResult(name, result);
+    // Successful action steps feed the recipe recorder for save_recipe.
+    recordStep(name, args, serialized.content);
     chat.messages.push({
       role: "tool",
       tool_call_id: toolCall.id,
