@@ -237,6 +237,29 @@ function findAuthenticatorKeyForDomain(keys, domain) {
   return match ? { domain: match, manualKey: keys[match] } : null;
 }
 
+// Codes are minted only for the site the user is on, never for an
+// arbitrary saved domain a page could name.
+async function mintAuthenticatorCodeForActiveTab(tool) {
+  const tab = await getActiveTabInfo();
+  const domain = normalizeAuthenticatorDomain(tab?.url || "");
+  if (!domain) return { error: toolError(tool, "no_active_domain", "No active website domain is available.", { recoverable: false }) };
+  const keys = await getAuthenticatorKeyMap();
+  const match = findAuthenticatorKeyForDomain(keys, domain);
+  if (!match) {
+    return { error: toolError(tool, "no_saved_key", `No authenticator manual key saved for "${domain}". Add it in Margin settings first.`, { recoverable: false }) };
+  }
+  const token = await generateTotp(match.manualKey);
+  return { domain, matchedDomain: match.domain, token };
+}
+
+// Last-resort guarantee for fill_secret: no serialized field may carry the code.
+function scrubSecretFromResult(result, code) {
+  if (!code) return result;
+  const json = JSON.stringify(result);
+  if (!json.includes(code)) return result;
+  return JSON.parse(json.split(code).join("******"));
+}
+
 // The debugger can capture a latched background tab; captureVisibleTab cannot.
 async function captureTabViaDebugger(tabId) {
   const keepAttached = isNetworkCaptureActive(tabId);
@@ -534,7 +557,11 @@ async function interactWithElement(tool, args = {}, action = "click") {
         : [{ tool: "take_snapshot", reason: "Refresh page state and choose a current element uid." }]
     });
   }
-  return await maybeAttachSnapshot(toolOk(tool, result.message, { target: result.target, value: result.value }), args);
+  const success = toolOk(tool, result.message, { target: result.target, value: result.value });
+  if (result.target) {
+    success.element = { role: result.target.role, name: result.target.name, tag: result.target.tag };
+  }
+  return await maybeAttachSnapshot(success, args);
 }
 
 async function pressKeyInActiveTab(args = {}) {
@@ -1013,26 +1040,47 @@ ${domResult.outerHtml}
         }, null, 2);
       }
 
-      // Codes are minted only for the site the user is on, never for an
-      // arbitrary saved domain a page could name.
       case "get_authenticator_code": {
-        const tab = await getActiveTabInfo();
-        const domain = normalizeAuthenticatorDomain(tab?.url || "");
-        if (!domain) return toolError(name, "no_active_domain", "No active website domain is available.", { recoverable: false });
-        const keys = await getAuthenticatorKeyMap();
-        const match = findAuthenticatorKeyForDomain(keys, domain);
-        if (!match) {
-          return toolError(name, "no_saved_key", `No authenticator manual key saved for "${domain}". Add it in Margin settings first.`, { recoverable: false });
-        }
-        const token = await generateTotp(match.manualKey);
+        const minted = await mintAuthenticatorCodeForActiveTab(name);
+        if (minted.error) return minted.error;
         return JSON.stringify({
-          domain,
-          matched_domain: match.domain,
-          code: token.code,
-          seconds_remaining: token.secondsRemaining,
-          period: token.period,
-          digits: token.digits
+          domain: minted.domain,
+          matched_domain: minted.matchedDomain,
+          code: minted.token.code,
+          seconds_remaining: minted.token.secondsRemaining,
+          period: minted.token.period,
+          digits: minted.token.digits
         }, null, 2);
+      }
+
+      // Credential firewall: the code goes page-ward only. No field of this
+      // tool's result — success, error, or message text — may carry the code.
+      case "fill_secret": {
+        const uid = String(args.uid || "").trim();
+        if (!uid) return toolError(name, "missing_target", "fill_secret requires uid.", { recoverable: false });
+        const minted = await mintAuthenticatorCodeForActiveTab(name);
+        if (minted.error) return minted.error;
+        // Only uid + value are forwarded, so include_snapshot cannot ride along
+        // and capture the filled field's value in a snapshot.
+        const result = await interactWithElement(name, { uid, value: minted.token.code }, "fill");
+        if (result.ok !== true) {
+          if (result.error_code === "value_not_applied") {
+            // The shared fill path echoes the field's kept value on mismatch;
+            // that echo could contain the code.
+            result.message = "Element did not accept the authenticator code.";
+          }
+          return scrubSecretFromResult(result, minted.token.code);
+        }
+        const target = result.data?.target;
+        const success = {
+          ok: true,
+          tool: name,
+          filled: true,
+          domain: minted.matchedDomain,
+          message: `Filled current authenticator code into ${uid}.`
+        };
+        if (target) success.element = { role: target.role, name: target.name, tag: target.tag };
+        return scrubSecretFromResult(success, minted.token.code);
       }
 
       default:

@@ -18,6 +18,11 @@ const BRIDGE_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 test("every proxied tool survives the bridge validator and reaches MCP shape", () => {
   assert.ok(MCP_PROXIED_TOOLS.length > 0);
 
+  // The sweep below covers whatever is proxied; this pins that fill_secret is
+  // actually among it, so the leak-free credential path exists on both surfaces.
+  const proxiedNames = new Set(MCP_PROXIED_TOOLS.map((tool) => tool.function.name));
+  assert.ok(proxiedNames.has("fill_secret"), "fill_secret must flow from BROWSER_TOOLS to the bridge");
+
   for (const tool of MCP_PROXIED_TOOLS) {
     const schema = toMcpToolSchema(tool);
     assert.match(schema.name, BRIDGE_NAME_PATTERN, `${schema.name} would be dropped by the bridge`);

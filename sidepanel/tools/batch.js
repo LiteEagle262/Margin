@@ -4,7 +4,7 @@
 // enforced.
 
 import { executeTool, guardToolCallBeforeExecution, evaluateToolLoopGuard, parseToolResultObject } from "./execute.js";
-import { isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
+import { BUILT_IN_TOOL_NAMES, isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
 
 export const BATCH_TOOL_NAME = "browser_batch";
 // Every action spends one call from the run's tool budget, so keep batches small
@@ -12,14 +12,15 @@ export const BATCH_TOOL_NAME = "browser_batch";
 export const MAX_BATCH_ACTIONS = 10;
 
 export const BATCHABLE_TOOL_NAMES = new Set([
-  "navigate", "click_element", "fill_element", "fill_form", "type_text",
+  "navigate", "click_element", "fill_element", "fill_form", "fill_secret", "type_text",
   "hover_element", "press_key", "scroll_page", "wait_for", "take_snapshot",
   "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script"
 ]);
 
 // A navigation or a click can still be committing when the next action runs.
-const SETTLE_AFTER_TOOLS = new Set(["navigate", "click_element"]);
-const SETTLE_MS = 400;
+// Exported because recipe replay (recipes.js) reuses the same settle behavior.
+export const SETTLE_AFTER_TOOLS = new Set(["navigate", "click_element"]);
+export const SETTLE_MS = 400;
 
 // Per-action output is capped so a long batch cannot swallow the context window.
 const TOTAL_RESULT_BUDGET = 24000;
@@ -56,8 +57,9 @@ function describeActionRejection(tool) {
     return `"${tool}" is not batchable. Batchable tools: ${[...BATCHABLE_TOOL_NAMES].join(", ")}.`;
   }
   // The same gate a standalone call would hit; enabling browser_batch must never
-  // re-enable a tool the user switched off.
-  if (!isBuiltInToolEnabled(tool)) {
+  // re-enable a tool the user switched off. Mirrors executeTool: only tools that
+  // appear in the access settings can be disabled there.
+  if (BUILT_IN_TOOL_NAMES.has(tool) && !isBuiltInToolEnabled(tool)) {
     return `Tool "${tool}" is disabled in Margin Tool Access settings.`;
   }
   return "";
