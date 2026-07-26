@@ -24,6 +24,7 @@ if (document.readyState === "loading") {
 }
 
 async function init() {
+  chrome.runtime.sendMessage({ type: "panel/opened" }).catch(() => {});
   await initStep("settings", loadSettings);
   await initStep("workspace", loadGlobalWorkspace);
   await initStep("chats", loadChats);

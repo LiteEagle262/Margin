@@ -1,5 +1,35 @@
 import { settings } from "../../state/store.js";
 import { normalizeNetworkCaptureSettings } from "../../../shared/settings-schema.js";
+import { downloadTextFile } from "../../lib/download.js";
+import { showToast } from "../../lib/toast.js";
+
+const TOOL_JOURNAL_KEY = "toolJournal";
+
+async function downloadToolJournal() {
+  try {
+    const stored = await chrome.storage.local.get(TOOL_JOURNAL_KEY);
+    const entries = Array.isArray(stored[TOOL_JOURNAL_KEY]) ? stored[TOOL_JOURNAL_KEY] : [];
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    downloadTextFile(
+      `margin-activity-log-${stamp}.json`,
+      JSON.stringify(entries, null, 2),
+      "application/json;charset=utf-8"
+    );
+  } catch (err) {
+    console.error("Could not download activity log:", err);
+    showToast("Could not download activity log: " + (err.message || "unknown error"));
+  }
+}
+
+async function clearToolJournal() {
+  try {
+    await chrome.storage.local.set({ [TOOL_JOURNAL_KEY]: [] });
+    showToast("Activity log cleared.");
+  } catch (err) {
+    console.error("Could not clear activity log:", err);
+    showToast("Could not clear activity log: " + (err.message || "unknown error"));
+  }
+}
 
 function setNetworkCaptureBadge(capture) {
   const badge = document.getElementById("network-capture-status-badge");
@@ -38,6 +68,9 @@ function renderNetworkCaptureSettings() {
 }
 
 function initNetworkCaptureSettings() {
+  document.getElementById("download-tool-journal-btn")?.addEventListener("click", downloadToolJournal);
+  document.getElementById("clear-tool-journal-btn")?.addEventListener("click", clearToolJournal);
+
   const autoInput = document.getElementById("network-auto-capture-latched");
   if (!autoInput) return;
 

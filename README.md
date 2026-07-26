@@ -43,6 +43,17 @@ Every tool can be turned on or off individually under **Settings → Tool Access
 - **External MCP servers** — connect streamable-HTTP MCP servers under **Settings → MCP Client Servers** to give
   the agent tools beyond the built-ins.
 
+## Security model — read this before enabling risky tools
+
+Margin drives your real, logged-in browser session. Tool access is consented once, in **Settings → Tool
+Access** — there is no runtime approval gate and no content-based defense. If a page you visit contains
+instructions aimed at the agent, the agent may follow them, and the tools you have enabled are the tools it
+will use. Enabling `run_js` or `evaluate_script` grants the agent — and anything that can influence it —
+arbitrary JavaScript on every page you visit, including logged-in ones. The activity log
+(**Settings → Network Capture → Download activity log**) records what ran, from which surface, and against
+which host; it is a record, not a barrier. Risky tools ship disabled for this reason. Enable what you will
+actually use, and treat the MCP bridge token like a password.
+
 ## MCP bridge
 
 The bridge points the other way: it lets an external MCP client drive your real browser through Margin.

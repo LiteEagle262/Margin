@@ -34,10 +34,13 @@ import { maybeAutoGenerateChatTitle } from "../features/chat-titles.js";
 import {
   classifyProviderResponse,
   describeEmptyProviderResponse,
+  isRetryableProviderError,
   MAX_OPENAI_CONTINUATION_TURNS,
 } from "./provider-response.js";
 
 const MCP_TOOL_RESULT_MAX_CHARS = 20000;
+const BUILTIN_TOOL_RESULT_MAX_CHARS = 80000;
+const PROVIDER_RETRY_DELAYS_MS = [2000, 8000];
 
 function visibleChat(chatId) {
   return chatId && currentChatId === chatId;
@@ -110,13 +113,54 @@ function serializeToolResult(name, result) {
       file: result,
     };
   }
-  const content = typeof result === "object" ? JSON.stringify(result, null, 2) : String(result);
+  const content = typeof result === "object" ? JSON.stringify(result) : String(result);
   if (parseMcpToolName(name) && content.length > MCP_TOOL_RESULT_MAX_CHARS) {
     return {
       content: `${content.slice(0, MCP_TOOL_RESULT_MAX_CHARS)}\n…truncated (${content.length} chars total)`,
     };
   }
+  if (content.length > BUILTIN_TOOL_RESULT_MAX_CHARS) {
+    return {
+      content: `${content.slice(0, BUILTIN_TOOL_RESULT_MAX_CHARS)}\n…truncated: ${content.length - BUILTIN_TOOL_RESULT_MAX_CHARS} chars dropped (${content.length} total).`,
+    };
+  }
   return { content };
+}
+
+// Resolves after ms, or immediately when the signal aborts (Stop button).
+function abortableDelay(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    let timer;
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function fetchCompletionWithRetry(requestBody, chatId) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetchProviderChatCompletion(settings.aiProvider, settings.apiKey, requestBody, {
+        signal: agentAbortController?.signal,
+        sessionId: chatId,
+      });
+    } catch (error) {
+      if (attempt >= PROVIDER_RETRY_DELAYS_MS.length || !isRetryableProviderError(error)) throw error;
+      console.warn(`Provider request failed (attempt ${attempt + 1}), retrying:`, error);
+      await abortableDelay(PROVIDER_RETRY_DELAYS_MS[attempt], agentAbortController?.signal);
+      if (agentStopRequested || agentAbortController?.signal?.aborted) throw error;
+    }
+  }
 }
 
 // Every tool_call must be answered or the next request is rejected by the provider.
@@ -150,10 +194,7 @@ async function runProviderCycle(chatId, chat, loading, disableTools, continuatio
     }
   }
 
-  const data = await fetchProviderChatCompletion(settings.aiProvider, settings.apiKey, requestBody, {
-    signal: agentAbortController?.signal,
-    sessionId: chatId,
-  });
+  const data = await fetchCompletionWithRetry(requestBody, chatId);
   loading?.remove();
   if (!Array.isArray(data.choices) || data.choices.length === 0) {
     throw new Error("The provider returned no completion choices.");
