@@ -2,13 +2,17 @@
 
 [![CI](https://github.com/LiteEagle262/extension-thhing/actions/workflows/ci.yml/badge.svg)](https://github.com/LiteEagle262/extension-thhing/actions/workflows/ci.yml)
 
+**[margindev.com](https://margindev.com)**
+
 Margin is an open-source Chrome extension that puts an AI agent in the browser side panel. The agent reads
 the page you are on, clicks and types, captures network traffic, keeps files in a per-chat workspace, and can
 expose the same tools to other MCP clients such as Claude Code, Codex, or Cursor.
 
 The extension is plain ES modules — there is no build step and no runtime dependency.
 
-## Install from source
+## Install
+
+A packed Chrome extension is coming soon. Until then, load it from source:
 
 1. Clone this repository.
 2. Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked**, and select the repository
@@ -88,9 +92,6 @@ The MCP server has its own suite:
 ```
 cd mcp-server && npm ci && npm test
 ```
-
-The marketing site lives in `website/`. Copy `website/.env.example` to `website/.env.local`, then
-`npm install && npm run dev`.
 
 ## License
 
