@@ -3080,6 +3080,7 @@ button {
 }
 
 .workspace-export-section .text-btn,
+.activity-log-section .text-btn,
 .config-import-export-section .text-btn,
 .chat-import-section .text-btn {
   white-space: nowrap;

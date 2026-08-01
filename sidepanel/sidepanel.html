@@ -539,10 +539,6 @@
               <button type="button" id="view-network-logs-btn" class="text-btn">View Logs</button>
               <button type="button" id="download-network-logs-btn" class="text-btn">Download Current Logs</button>
             </div>
-            <div class="network-capture-actions">
-              <button type="button" id="download-tool-journal-btn" class="text-btn">Download Activity Log</button>
-              <button type="button" id="clear-tool-journal-btn" class="text-btn">Clear</button>
-            </div>
             <span class="help-text">Auto-capture attaches Chrome DevTools Protocol only to the latched tab. Logs are a rolling session buffer of the last 1500 requests, not a global recorder.</span>
           </div>
 
@@ -582,6 +578,17 @@
               <button type="button" id="export-global-workspace-btn" class="text-btn">Export Global Workspace</button>
             </div>
             <span class="help-text">Exports the persistent workspace shared across chats. Current chat raw exports only include the selected chat.</span>
+          </div>
+
+          <div class="form-group activity-log-section">
+            <div class="form-group-header">
+              <label>Activity Log</label>
+              <div class="config-actions">
+                <button type="button" id="download-tool-journal-btn" class="text-btn">Download Activity Log</button>
+                <button type="button" id="clear-tool-journal-btn" class="text-btn">Clear</button>
+              </div>
+            </div>
+            <span class="help-text">A rolling record of the last 300 tool executions from both the chat agent and the MCP bridge. Argument values are recorded as lengths, not contents, and URL secrets are redacted.</span>
           </div>
 
           <div class="form-group config-import-export-section">
