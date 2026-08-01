@@ -28,3 +28,5 @@ ui-mockups
 
 # Marketing site — lives outside this repository
 website/
+.mcp.json
+landing-mockups

@@ -1,4 +1,5 @@
 import { normalizeNetworkCaptureSettings } from "./settings-schema.js";
+import { SENSITIVE_FIELD_RE, redactUrlSecrets } from "./redact-url.js";
 
 const NETWORK_STORAGE_KEY = "marginNetworkLogs";
 const NETWORK_SETTINGS_KEY = "networkCapture";
@@ -11,8 +12,6 @@ const MAX_WS_FRAMES = 100;
 const MAX_FRAME_LENGTH = 2000;
 
 const SENSITIVE_HEADER_RE = /^(authorization|cookie|set-cookie|proxy-authorization|x-api-key|x-auth-token|x-csrf-token|x-xsrf-token)$/i;
-const SENSITIVE_FIELD_RE = /(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth|credential|session|csrf|xsrf)/i;
-const SENSITIVE_URL_PARAM_RE = /^(?:authorization|auth|bearer|code|credential|client[_-]?secret|id[_-]?token|jwt|key|password|passwd|pwd|secret|session(?:id)?|sig|signature|token|x-amz-credential|x-amz-security-token|x-amz-signature|x-goog-credential|x-goog-signature)$/i;
 const BODY_TEXT_MIME_RE = /^(application\/json|application\/.*\+json|text\/|application\/x-www-form-urlencoded|application\/xml|application\/graphql|application\/javascript)/i;
 
 const DEFAULT_NETWORK_SETTINGS = {
@@ -30,10 +29,6 @@ const networkState = {
   hydratePromise: null,
   settings: { ...DEFAULT_NETWORK_SETTINGS }
 };
-
-function isSensitiveUrlParam(name) {
-  return SENSITIVE_URL_PARAM_RE.test(name) || SENSITIVE_FIELD_RE.test(name);
-}
 
 function getTabNetworkState(tabId) {
   if (!networkState.tabs.has(tabId)) {
@@ -83,42 +78,10 @@ function redactHeaders(headers = {}) {
   }, {});
 }
 
-function redactUrlFragment(fragment) {
-  return String(fragment || "").replace(
-    /([#&?])([^#&?=]+)=([^&#]*)/g,
-    (match, separator, rawKey) => {
-      let key = rawKey;
-      try {
-        key = decodeURIComponent(rawKey.replace(/\+/g, " "));
-      } catch {
-        // Use the raw key when percent-decoding fails.
-      }
-      return isSensitiveUrlParam(key)
-        ? `${separator}${rawKey}=${encodeURIComponent("[redacted]")}`
-        : match;
-    },
-  );
-}
-
 export function redactNetworkUrl(rawUrl) {
   const value = String(rawUrl || "");
   if (!shouldRedact() || !value) return value;
-
-  try {
-    const url = new URL(value);
-    url.username = "";
-    url.password = "";
-    const keys = [...new Set(url.searchParams.keys())];
-    for (const key of keys) {
-      if (isSensitiveUrlParam(key)) {
-        url.searchParams.set(key, "[redacted]");
-      }
-    }
-    url.hash = redactUrlFragment(url.hash);
-    return url.toString();
-  } catch {
-    return redactUrlFragment(value);
-  }
+  return redactUrlSecrets(value);
 }
 
 function redactJsonValue(value, key = "") {

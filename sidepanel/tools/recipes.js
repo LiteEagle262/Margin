@@ -10,7 +10,7 @@ import {
   evaluateToolLoopGuard,
   parseToolResultObject
 } from "./execute.js";
-import { BATCHABLE_TOOL_NAMES, SETTLE_AFTER_TOOLS, SETTLE_MS } from "./batch.js";
+import { BATCHABLE_TOOL_NAMES, SETTLE_AFTER_TOOLS, SETTLE_MS } from "../../shared/batch-core.js";
 import { executeWorkspaceTool, getWorkspaceFile, getAllWorkspaceFiles } from "../features/workspace.js";
 
 export const RECIPE_TOOL_SCHEMAS = [
@@ -75,8 +75,8 @@ export const RECIPE_TOOL_SCHEMAS = [
 export const RECIPE_TOOL_NAMES = new Set(RECIPE_TOOL_SCHEMAS.map((tool) => tool.function.name));
 
 // Allowed step tools: the batchable ACTION set (observation and script tools
-// excluded). Computed lazily because batch.js and execute.js form an import
-// cycle with this module, so BATCHABLE_TOOL_NAMES may not exist at eval time.
+// excluded). Still computed lazily so the set is built on first use rather than
+// at module eval; batch-core.js imports nothing, so there is no longer a cycle.
 const NON_STEP_BATCHABLE = new Set([
   "take_snapshot", "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script"
 ]);

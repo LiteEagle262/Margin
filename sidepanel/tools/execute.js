@@ -7,6 +7,11 @@ import { getMaxToolCalls } from "../settings/sections/agent-limits.js";
 import { executeWorkspaceTool } from "../features/workspace.js";
 import { BATCH_TOOL_NAME, executeBatchTool } from "./batch.js";
 import { RECIPE_TOOL_NAMES, RECIPE_TOOL_SCHEMAS, executeRecipeTool } from "./recipes.js";
+import { parseToolResultObject } from "../../shared/batch-core.js";
+
+// Defined in batch-core so the background service worker can parse tool results
+// without loading any panel module.
+export { parseToolResultObject };
 
 const TOOL_LOOP_LIMITS = {
   sameFailure: 2,
@@ -202,17 +207,6 @@ export async function executeTool(name, args = {}, surface = "panel") {
   return executePageToolViaBackground(name, args, surface);
 }
 
-export function parseToolResultObject(result) {
-  if (result && typeof result === "object" && !result.screenshot && result.type !== "file") return result;
-  if (typeof result !== "string") return null;
-  try {
-    const parsed = JSON.parse(result);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 export function guardToolCallBeforeExecution(toolName) {
   if (!activeToolRunStats) return null;
   activeToolRunStats.toolCallCount += 1;
@@ -277,45 +271,3 @@ export function evaluateToolLoopGuard(toolName, toolArgs, result) {
   return null;
 }
 
-globalThis.chrome?.runtime?.onMessage?.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "mcp/tool-call") return false;
-  (async () => {
-    try {
-      // The call reaches every window's side panel; only the addressed one runs it.
-      const panelWindow = await chrome.windows.getCurrent();
-      if (panelWindow?.id !== message.targetWindowId) return;
-      const result = await executeTool(String(message.name || ""), message.arguments || {}, "bridge");
-      if (result && typeof result === "object" && result.screenshot) {
-        const data = String(result.screenshot).replace(/^data:image\/[^;]+;base64,/, "");
-        sendResponse({
-          ok: true,
-          result: {
-            content: [
-              { type: "text", text: result.message || "Screenshot captured." },
-              { type: "image", data, mimeType: "image/png" },
-            ],
-            isError: false,
-          },
-        });
-        return;
-      }
-      const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-      sendResponse({
-        ok: true,
-        result: {
-          content: [{ type: "text", text }],
-          isError: parseToolResultObject(result)?.ok === false,
-        },
-      });
-    } catch (error) {
-      sendResponse({
-        ok: false,
-        result: {
-          content: [{ type: "text", text: error.message || String(error) }],
-          isError: true,
-        },
-      });
-    }
-  })();
-  return true;
-});

@@ -18,6 +18,7 @@ import { WEB_SEARCH_TOOL_NAMES, isWebSearchAvailable, executeWebSearchTool, norm
 import { MCP_PROXIED_TOOLS, toMcpToolSchema } from "./shared/tool-schemas.js";
 import { buildJournalEntry, appendJournalEntry } from "./shared/journal.js";
 import { BUILT_IN_TOOL_NAMES, DEFAULT_ENABLED_TOOLS } from "./sidepanel/settings/sections/tool-access.js";
+import { BATCH_TOOL_NAME, runBatch } from "./shared/batch-core.js";
 
 const RECONNECT_BASE_DELAY_MS = 3000;
 const RECONNECT_MAX_DELAY_MS = 60000;
@@ -216,8 +217,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "mcp-bridge/regenerate-token") {
+    // Without the catch a rejection leaves the settings UI awaiting a response
+    // that never arrives, the same way the old bridge panel routing hung.
     ensureMcpBridgeDefaults(true).then((token) => {
       sendResponse({ ok: true, token });
+    }).catch((err) => {
+      sendResponse({ ok: false, error: err?.message || String(err) });
     });
     return true;
   }
@@ -489,14 +494,48 @@ function sendFeatureFlagsToBridge() {
   } catch (e) {}
 }
 
-// Side panels are per-window, so the broadcast has to name one panel or every
-// open window would run the same tool call.
-async function activePanelWindowId() {
-  const panels = await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] });
-  if (!panels.length) return null;
-  const focused = await chrome.windows.getLastFocused().catch(() => null);
-  const active = panels.find((panel) => panel.windowId === focused?.id);
-  return (active || panels[0]).windowId;
+// Every tool the bridge advertises (MCP_PROXIED_TOOLS = BROWSER_TOOLS +
+// RECON_TOOLS) runs in this service worker, so the bridge never needs an open
+// side panel and there is no redundant background -> panel -> background round
+// trip. browser_batch runs the shared batch core here with a background
+// adapter; the panel runs the same core for the in-chat agent.
+function isBatchActionEnabled(tool) {
+  return !BUILT_IN_TOOL_NAMES.has(tool) || isStoredToolEnabled(tool);
+}
+
+// The bridge has no agent run, so the in-chat tool budget and loop guards do
+// not apply here — only the per-action access gate does.
+function runBridgeBatch(args) {
+  return runBatch(args, {
+    // Each action is journaled individually. Calling executePageTool here skips
+    // the "page-tool" message handler that normally records them, and a lone
+    // browser_batch entry would leave the audit trail without the actions.
+    runTool: async (tool, toolArgs) => {
+      try {
+        const result = await executePageTool(tool, toolArgs);
+        recordToolJournalEntry({ surface: "bridge", tool, args: toolArgs, outcome: journalOutcome(result) });
+        return result;
+      } catch (err) {
+        recordToolJournalEntry({ surface: "bridge", tool, args: toolArgs, outcome: "error" });
+        throw err;
+      }
+    },
+    isToolEnabled: isBatchActionEnabled
+  });
+}
+
+async function runBridgePageTool(message) {
+  const args = message.arguments || {};
+  try {
+    const result = message.name === BATCH_TOOL_NAME
+      ? await runBridgeBatch(args)
+      : await executePageTool(message.name, args);
+    recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: journalOutcome(result) });
+    return result;
+  } catch (err) {
+    recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: "error" });
+    throw err;
+  }
 }
 
 // Bridge web searches run entirely in the background, so this is the only
@@ -511,37 +550,6 @@ async function runBridgeWebSearch(message) {
     recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: "error" });
     throw err;
   }
-}
-
-async function requestMcpToolFromPanel(message) {
-  const targetWindowId = await activePanelWindowId();
-  if (targetWindowId === null) {
-    return {
-      content: [{ type: "text", text: "Open the Margin side panel to approve and run browser tools." }],
-      isError: true,
-    };
-  }
-
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage({
-      type: "mcp/tool-call",
-      targetWindowId,
-      name: message.name,
-      arguments: message.arguments || {},
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        resolve({
-          content: [{ type: "text", text: "Open the Margin side panel to approve and run browser tools." }],
-          isError: true,
-        });
-        return;
-      }
-      resolve(response?.result || {
-        content: [{ type: "text", text: "Margin returned no tool result." }],
-        isError: true,
-      });
-    });
-  });
 }
 
 function scheduleMcpBridgeConnection(force = false) {
@@ -678,7 +686,7 @@ function connectBridge() {
       try {
         const formatted = WEB_SEARCH_TOOL_NAMES.has(message.name)
           ? formatToolResultForMcp(await runBridgeWebSearch(message))
-          : await requestMcpToolFromPanel(message);
+          : formatToolResultForMcp(await runBridgePageTool(message));
         socket.send(JSON.stringify({
           type: "tool/result",
           id: message.id,

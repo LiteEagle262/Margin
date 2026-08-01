@@ -6,6 +6,7 @@ import { SETTINGS_SECTIONS } from "./settings/registry.js";
 import { loadSettings, switchActiveProvider, scheduleSettingsAutosave, flushSettingsAutosave, exportConfig, importConfigFile } from "./settings/core.js";
 import { loadChats, createNewChatSession } from "./features/chats.js";
 import { exportGlobalWorkspace, importRawChatFile } from "./features/chat-export.js";
+import { downloadToolJournal, clearToolJournal } from "./features/activity-log.js";
 import { initNetworkLogs } from "./features/network-logs.js";
 import { refreshMcpTools } from "./tools/execute.js";
 import { initHistoryDrawer } from "./ui/history-drawer.js";
@@ -138,6 +139,16 @@ if (resetDataBtn) {
 const exportGlobalWorkspaceBtn = document.getElementById("export-global-workspace-btn");
 if (exportGlobalWorkspaceBtn) {
   exportGlobalWorkspaceBtn.addEventListener("click", exportGlobalWorkspace);
+}
+
+const downloadToolJournalBtn = document.getElementById("download-tool-journal-btn");
+if (downloadToolJournalBtn) {
+  downloadToolJournalBtn.addEventListener("click", downloadToolJournal);
+}
+
+const clearToolJournalBtn = document.getElementById("clear-tool-journal-btn");
+if (clearToolJournalBtn) {
+  clearToolJournalBtn.addEventListener("click", clearToolJournal);
 }
 
 const exportConfigBtn = document.getElementById("export-config-btn");
