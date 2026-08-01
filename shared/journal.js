@@ -1,14 +1,21 @@
 // Compact audit journal for tool executions. Pure module — no chrome globals —
 // so it stays unit-testable.
 
+import { redactUrlSecrets } from "./redact-url.js";
+
 export const MAX_JOURNAL_ENTRIES = 300;
 
-// Only these argument values are safe to record verbatim. Every other field is
+// Only these argument values are recorded verbatim. Every other field is
 // recorded as its length only — fill_element args carry passwords and
 // get_authenticator_code results carry codes, so values must never be stored.
 const ARG_KEY_ALLOWLIST = new Set([
   "url", "uid", "selector", "method", "direction", "type", "key", "path", "name", "query"
 ]);
+
+// "url" is allowlisted for the path, not for the query string: http_request and
+// navigate accept tokens in query params. Redaction here is unconditional and
+// deliberately not the network-log setting, which the user can switch off.
+const ARG_KEYS_NEEDING_URL_REDACTION = new Set(["url"]);
 
 const MAX_ARG_VALUE_CHARS = 200;
 
@@ -24,9 +31,12 @@ function summarizeArgs(args) {
   const summary = {};
   for (const [key, value] of Object.entries(args)) {
     if (ARG_KEY_ALLOWLIST.has(key) && (value === null || typeof value !== "object")) {
-      summary[key] = typeof value === "string" && value.length > MAX_ARG_VALUE_CHARS
-        ? value.slice(0, MAX_ARG_VALUE_CHARS)
+      const safe = ARG_KEYS_NEEDING_URL_REDACTION.has(key) && typeof value === "string"
+        ? redactUrlSecrets(value)
         : value;
+      summary[key] = typeof safe === "string" && safe.length > MAX_ARG_VALUE_CHARS
+        ? safe.slice(0, MAX_ARG_VALUE_CHARS)
+        : safe;
     } else {
       summary[`${key}_len`] = valueLength(value);
     }
