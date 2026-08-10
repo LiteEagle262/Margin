@@ -21,6 +21,10 @@ const DEFAULT_PORT = 9229;
 const DEFAULT_HOST = "127.0.0.1";
 const TOOL_TIMEOUT_MS = 120000;
 const AUTH_TIMEOUT_MS = 5000;
+// Some clients (Codex) ask for tools/list once at startup and ignore
+// list_changed, so the first list waits out the extension's reconnect backoff.
+// Stay under the 10s MCP startup timeout those clients allow.
+const LIST_TOOLS_WAIT_MS = 8000;
 const MAX_BRIDGE_PAYLOAD_BYTES = 1024 * 1024;
 const MIN_AUTH_TOKEN_BYTES = 32;
 const CHROME_EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
@@ -46,6 +50,8 @@ let mcpServer = null;
 // matching definitions. Both arrive together on `feature-flags/set`.
 let enabledToolNames = new Set();
 let pushedTools = [];
+let hasReceivedFeatureFlags = false;
+let featureFlagsWaiters = [];
 
 function log(message) {
   console.error(`[margin-mcp] ${message}`);
@@ -106,6 +112,8 @@ function clearExtensionControlledState() {
   const hadVisibleTools = visibleTools().length > 0;
   enabledToolNames = new Set();
   pushedTools = [];
+  // A list issued after the extension drops waits for the reconnecting push.
+  hasReceivedFeatureFlags = false;
   setWebSearchEnabled(false);
   if (hadVisibleTools && mcpServer) {
     mcpServer.notification({ method: "notifications/tools/list_changed" })
@@ -203,6 +211,36 @@ export function visibleTools() {
   // a tool the user switched off.
   const proxied = pushedTools.filter((tool) => enabledToolNames.has(tool.name));
   return [...proxied, ...local];
+}
+
+function resolveFeatureFlagsWaiters() {
+  hasReceivedFeatureFlags = true;
+  const waiters = featureFlagsWaiters;
+  featureFlagsWaiters = [];
+  for (const waiter of waiters) waiter();
+}
+
+// Waits for the first push only; an empty allowlist is still an answer.
+// Times out rather than rejecting, so a client that lists with no extension
+// running still gets a tool list.
+function waitForFirstFeatureFlagsPush(timeoutMs) {
+  if (hasReceivedFeatureFlags) return Promise.resolve();
+  return new Promise((resolve) => {
+    const waiter = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      featureFlagsWaiters = featureFlagsWaiters.filter((entry) => entry !== waiter);
+      resolve();
+    }, timeoutMs);
+    featureFlagsWaiters.push(waiter);
+  });
+}
+
+export async function listTools(timeoutMs = LIST_TOOLS_WAIT_MS) {
+  await waitForFirstFeatureFlagsPush(timeoutMs);
+  return { tools: visibleTools() };
 }
 
 export function startBridgeServer({
@@ -348,6 +386,7 @@ export function startBridgeServer({
         const webSearch = message.flags.webSearch || {};
         setWebSearchEnabled(webSearch.enabled === true);
         const after = JSON.stringify(visibleTools());
+        resolveFeatureFlagsWaiters();
         log(`Feature flags updated (webSearch.enabled=${isWebSearchEnabled()}, tools=${visibleTools().length})`);
         if (before !== after && mcpServer) {
           mcpServer.notification({ method: "notifications/tools/list_changed" })
@@ -414,9 +453,7 @@ export async function main() {
   );
   mcpServer = server;
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: visibleTools()
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, () => listTools());
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
