@@ -25,6 +25,9 @@ const AUTH_TIMEOUT_MS = 5000;
 // list_changed, so the first list waits out the extension's reconnect backoff.
 // Stay under the 10s MCP startup timeout those clients allow.
 const LIST_TOOLS_WAIT_MS = 8000;
+// Codex runs several copies of this server at once, so another instance may
+// hold the bridge port and may exit at any time; the losers keep retrying.
+const BRIDGE_RETRY_MS = 2000;
 const MAX_BRIDGE_PAYLOAD_BYTES = 1024 * 1024;
 const MIN_AUTH_TOKEN_BYTES = 32;
 const CHROME_EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
@@ -243,12 +246,17 @@ export async function listTools(timeoutMs = LIST_TOOLS_WAIT_MS) {
   return { tools: visibleTools() };
 }
 
-export function startBridgeServer({
-  bridgeHost = host,
-  bridgePort = port,
-  bridgeAuthToken = configuredAuthToken,
-  exitOnError = false
-} = {}) {
+export function startBridgeServer(options = {}) {
+  const {
+    bridgeHost = host,
+    bridgePort = port,
+    bridgeAuthToken = configuredAuthToken,
+    exitOnError = false,
+    retryDelayMs = BRIDGE_RETRY_MS,
+    // Lets a caller reach the instance a retry created, since the first return
+    // value belongs to the server that lost the port.
+    onListening = null
+  } = options;
   const requiredAuthToken = requireBridgeAuthToken(bridgeAuthToken);
   const wss = new WebSocketServer({
     host: bridgeHost,
@@ -278,6 +286,7 @@ export function startBridgeServer({
     const listeningPort = typeof address === "object" && address ? address.port : bridgePort;
     log(`Bridge listening on ws://${bridgeHost}:${listeningPort}`);
     log("Auth token required for extension connections.");
+    onListening?.(wss);
   });
 
   wss.on("connection", (socket, request) => {
@@ -418,11 +427,6 @@ export function startBridgeServer({
     });
   });
 
-  wss.on("error", (err) => {
-    log(`Bridge server error: ${err.message}`);
-    if (exitOnError) process.exit(1);
-  });
-
   const keepAliveTimer = setInterval(() => {
     if (extensionSocket && extensionSocket.readyState === 1) {
       extensionSocket.send(JSON.stringify({ type: "ping" }));
@@ -431,6 +435,19 @@ export function startBridgeServer({
 
   wss.on("close", () => {
     clearInterval(keepAliveTimer);
+  });
+
+  wss.on("error", (err) => {
+    log(`Bridge server error: ${err.message}`);
+    if (err.code === "EADDRINUSE") {
+      // Only the current wss schedules a retry, so retries never stack.
+      log(`Bridge port ${bridgePort} in use; retrying in ${retryDelayMs}ms`);
+      clearInterval(keepAliveTimer);
+      wss.close();
+      setTimeout(() => startBridgeServer(options), retryDelayMs);
+      return;
+    }
+    if (exitOnError) process.exit(1);
   });
 
   return wss;
@@ -481,6 +498,18 @@ export async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // Nothing else releases the event loop once the client is gone: the bridge
+  // server and its keep-alive both keep it alive, so a dead client would leave
+  // this process squatting the port. The SDK's stdio transport only listens for
+  // `data`, so stdin EOF is what actually fires here.
+  const exitOnClientGone = () => {
+    log("stdio client disconnected, exiting");
+    process.exit(0);
+  };
+  process.stdin.on("end", exitOnClientGone);
+  process.stdin.on("close", exitOnClientGone);
+
   log("MCP server ready on stdio");
 }
 
