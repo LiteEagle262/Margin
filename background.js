@@ -20,8 +20,12 @@ import { buildJournalEntry, appendJournalEntry } from "./shared/journal.js";
 import { BUILT_IN_TOOL_NAMES, DEFAULT_ENABLED_TOOLS } from "./sidepanel/settings/sections/tool-access.js";
 import { BATCH_TOOL_NAME, runBatch } from "./shared/batch-core.js";
 
-const RECONNECT_BASE_DELAY_MS = 3000;
-const RECONNECT_MAX_DELAY_MS = 60000;
+// A server holds its client's first tools/list open for a few seconds; starting
+// low puts the first retries inside that window instead of after it. The cap
+// bounds discovery of a freshly started server even after a long-idle bridge —
+// a failed loopback connect every 5s is negligible.
+const RECONNECT_BASE_DELAY_MS = 750;
+const RECONNECT_MAX_DELAY_MS = 5000;
 const KEEPALIVE_ALARM = "margin-bridge-keepalive";
 const SERVER_PROOF_PREFIX = "margin-bridge-server:";
 const CLIENT_PROOF_PREFIX = "margin-bridge-client:";

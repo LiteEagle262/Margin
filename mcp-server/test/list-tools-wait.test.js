@@ -61,7 +61,17 @@ async function disconnect(socket) {
   await waitFor(() => visibleTools().length === 0, "the disconnect to clear the pushed tools");
 }
 
-test("a list with no extension push gives up after the bounded wait", async () => {
+// No bridge is listening, binding, or being mirrored here, so nothing can push.
+test("a copy with no route to the extension answers the list immediately", async () => {
+  const started = Date.now();
+  const { tools } = await listTools(5000);
+  const elapsed = Date.now() - started;
+  assert.deepEqual(tools, []);
+  assert.ok(elapsed < 500, `no bridge means no push is possible, so there is nothing to wait for (${elapsed}ms)`);
+});
+
+test("a list with no extension push gives up after the bounded wait", async (t) => {
+  await startTestServer(t);
   const started = Date.now();
   const { tools } = await listTools(40);
   assert.deepEqual(tools, [], "no extension means no tools, but only after waiting");
