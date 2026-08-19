@@ -316,11 +316,20 @@ export function pageAgentScript(input) {
   const ROLE_MAP = {
     A: "link",
     BUTTON: "button",
-    INPUT: "textbox",
     TEXTAREA: "textbox",
     SELECT: "combobox",
     OPTION: "option",
     SUMMARY: "button"
+  };
+  // An INPUT is whatever its type says it is; one blanket role hid every
+  // submit-by-input button behind role "textbox".
+  const INPUT_ROLE_MAP = {
+    submit: "button",
+    button: "button",
+    reset: "button",
+    image: "button",
+    checkbox: "checkbox",
+    radio: "radio"
   };
 
   function hash(value) {
@@ -353,8 +362,25 @@ export function pageAgentScript(input) {
     return parts.join(" > ");
   }
 
+  function inputType(el) {
+    return el.tagName === "INPUT" ? String(el.getAttribute("type") || "").toLowerCase() : "";
+  }
+
+  // Every HTMLInputElement carries a .checked property, so only the type says
+  // whether an element is really a toggle.
+  function isToggle(el) {
+    const type = inputType(el);
+    return type === "checkbox" || type === "radio";
+  }
+
+  function isButtonInput(el) {
+    const type = inputType(el);
+    return type === "submit" || type === "button" || type === "reset";
+  }
+
   // el.value is deliberately not part of the name: it feeds the uid, and a uid
-  // must survive the field being filled.
+  // must survive the field being filled. A submit/button/reset input is the
+  // exception — its value is its printed label and filling never changes it.
   function accessibleName(el) {
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
@@ -370,20 +396,37 @@ export function pageAgentScript(input) {
       const text = Array.from(el.labels).map((label) => label.innerText).join(" ").trim();
       if (text) return text;
     }
+    if (isButtonInput(el) && el.value) return String(el.value).trim();
     if (el.alt) return String(el.alt).trim();
     if (el.placeholder) return String(el.placeholder).trim();
     if (el.title) return String(el.title).trim();
     return String(el.innerText || "").replace(/\s+/g, " ").trim();
   }
 
+  // Page text arrives with &nbsp; and line wrapping, so every name comparison
+  // goes through this first.
+  function normText(value) {
+    return String(value ?? "").replace(/[\u00a0\u2007\u202f]/g, " ").replace(/\s+/g, " ").trim();
+  }
+
   function roleFor(el) {
-    return el.getAttribute("role") || ROLE_MAP[el.tagName] || (el.isContentEditable ? "textbox" : "generic");
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+    if (el.tagName === "INPUT") return INPUT_ROLE_MAP[inputType(el)] || "textbox";
+    return ROLE_MAP[el.tagName] || (el.isContentEditable ? "textbox" : "generic");
   }
 
   function isVisible(el) {
     const style = getComputedStyle(el);
     const rect = el.getBoundingClientRect();
     return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  }
+
+  // Styled checkboxes and radios are routinely 1x0 px behind a visible label;
+  // the label is the only clickable surface they have.
+  function visibleLabelFor(el) {
+    if (!isToggle(el)) return null;
+    return Array.from(el.labels || []).find((label) => isVisible(label)) || null;
   }
 
   // No positional index: hidden nodes are filtered out of snapshots but not out
@@ -430,7 +473,7 @@ export function pageAgentScript(input) {
         selector: cssPath(el),
         visible,
         enabled: !el.disabled && el.getAttribute("aria-disabled") !== "true",
-        checked: typeof el.checked === "boolean" ? el.checked : undefined,
+        checked: isToggle(el) ? el.checked : undefined,
         value: ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) ? String(el.value || "").slice(0, 120) : undefined,
         rect: {
           x: Math.round(rect.x),
@@ -457,61 +500,143 @@ export function pageAgentScript(input) {
   let el = null;
   if (input.uid) el = nodes.find((node) => uidFor(node) === input.uid) || null;
   if (!el && input.selector) el = document.querySelector(input.selector);
+  if (!el && input.find_text) {
+    const wanted = normText(input.find_text).toLowerCase();
+    const wantedRole = String(input.role || "").toLowerCase();
+    const matches = nodes.filter((node) => {
+      if (!isVisible(node) && !visibleLabelFor(node)) return false;
+      if (wantedRole && roleFor(node).toLowerCase() !== wantedRole) return false;
+      return normText(accessibleName(node)).toLowerCase().includes(wanted);
+    });
+    const exact = matches.filter((node) => normText(accessibleName(node)).toLowerCase() === wanted);
+    const matched = exact.length ? exact : matches;
+    // A wrapper (div[role=button]) and the control it wraps carry the same name;
+    // only the innermost element is a real target.
+    const pool = matched.filter((node) => !matched.some((other) => other !== node && node.contains?.(other)));
+    if (pool.length === 1) el = pool[0];
+    else if (pool.length > 1) {
+      return {
+        ok: false,
+        error_code: "ambiguous_target",
+        message: `${pool.length} visible elements match that find_text. Pick one by uid.`,
+        candidates: pool.slice(0, 8).map((node) => summarize(node))
+      };
+    }
+  }
   if (!el) {
-    const needle = String(input.selector || "").toLowerCase();
+    const needle = normText(input.find_text || input.selector).toLowerCase();
     const wantedTag = (/^sf-([a-z0-9]+)-/.exec(String(input.uid || "")) || [])[1] || "";
     const candidates = nodes
       .filter((node) => isVisible(node))
       .map((node) => summarize(node))
       .filter((item) => {
-        if (needle) return item.name.toLowerCase().includes(needle) || item.selector.toLowerCase().includes(needle);
+        if (needle) return normText(item.name).toLowerCase().includes(needle) || item.selector.toLowerCase().includes(needle);
         return wantedTag ? item.tag === wantedTag : true;
       })
       .slice(0, 8);
-    return { ok: false, error_code: "target_not_found", message: "No element matched that uid or selector.", candidates };
+    // No candidates means no candidate to retry with, so the key is left off
+    // rather than shipping an empty list next to advice about picking from it.
+    return {
+      ok: false,
+      error_code: "target_not_found",
+      message: "No element matched that uid, selector, or find_text.",
+      ...(candidates.length ? { candidates } : {})
+    };
   }
-  if (!isVisible(el)) {
+  // Locate answers before the visibility gate: a file input is routinely hidden
+  // behind a styled button, and set_file_input still has to reach it.
+  if (input.action === "locate") {
+    // cssPath is lossy, so the caller gets a stamped attribute selector that can
+    // only ever resolve back to this exact element.
+    const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    el.setAttribute("data-margin-locate", token);
+    return {
+      ok: true,
+      message: "Element located.",
+      target: {
+        ...summarize(el),
+        type: String(el.getAttribute("type") || "").toLowerCase(),
+        locate_selector: `[data-margin-locate="${token}"]`
+      }
+    };
+  }
+  const toggleLabel = visibleLabelFor(el);
+  if (!isVisible(el) && !toggleLabel) {
     return { ok: false, error_code: "target_not_visible", message: "Element exists but is not visible.", target: summarize(el) };
   }
   if (el.disabled || el.getAttribute("aria-disabled") === "true") {
     return { ok: false, error_code: "target_disabled", message: "Element exists but is disabled.", target: summarize(el) };
   }
 
-  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-  el.focus?.();
+  // A styled toggle's input can be unclickable; its label is the real surface.
+  const actor = isVisible(el) ? el : toggleLabel;
+  actor.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  actor.focus?.();
   const target = summarize(el);
 
   if (input.action === "click") {
     if (input.dblClick) {
-      el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
-    } else {
-      el.click();
+      actor.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
+      return { ok: true, message: "Element clicked.", target };
+    }
+    const toggle = isToggle(el);
+    const before = toggle ? el.checked : undefined;
+    actor.click();
+    // No retry: a toggle handler is not idempotent, and frameworks apply state
+    // asynchronously, so the caller verifies from checked_before/checked_after.
+    if (toggle) {
+      return { ok: true, message: "Element clicked.", target, checked_before: before, checked_after: el.checked };
     }
     return { ok: true, message: "Element clicked.", target };
   }
 
   if (input.action === "hover") {
-    el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
-    el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window }));
+    actor.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
+    actor.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window }));
     return { ok: true, message: "Element hovered.", target };
   }
 
   if (input.action === "fill" || input.action === "type") {
     const value = String(input.value ?? input.text ?? "");
-    const type = String(el.getAttribute("type") || "").toLowerCase();
-    const isToggle = type === "checkbox" || type === "radio";
-    const wanted = isToggle ? (value === "true" || value === "1" || value.toLowerCase() === "yes") : value;
-    if (isToggle) el.checked = wanted;
-    else if (el.isContentEditable) el.textContent = value;
+    const type = inputType(el);
+    if (isToggle(el)) {
+      const wanted = value === "true" || value === "1" || value.toLowerCase() === "yes";
+      const before = el.checked;
+      const setDirectly = () => {
+        el.checked = wanted;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      if (before !== wanted) {
+        // A click can never uncheck a radio; everywhere else frameworks listen
+        // for the click, not for a programmatic .checked write.
+        if (wanted === false && type === "radio") {
+          setDirectly();
+        } else {
+          actor.click();
+          if (el.checked !== wanted) setDirectly();
+        }
+      }
+      if (el.checked !== wanted) {
+        return {
+          ok: false,
+          error_code: "value_not_applied",
+          message: `Element kept "${String(el.checked)}" instead of the requested value.`,
+          target
+        };
+      }
+      return { ok: true, message: "Element value set.", target, value, checked_before: before, checked_after: el.checked };
+    }
+    if (el.isContentEditable) el.textContent = value;
     else el.value = value;
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    const actual = isToggle ? el.checked : String((el.isContentEditable ? el.textContent : el.value) ?? "");
-    if (actual !== wanted) {
+    const actual = String((el.isContentEditable ? el.textContent : el.value) ?? "");
+    if (actual !== value) {
       return {
         ok: false,
         error_code: "value_not_applied",
-        message: `Element kept "${String(actual).slice(0, 120)}" instead of the requested value.`,
+        message: `Element kept "${actual.slice(0, 120)}" instead of the requested value.`,
         target
       };
     }
@@ -543,6 +668,8 @@ async function interactWithElement(tool, args = {}, action = "click") {
     action,
     uid: args.uid,
     selector: args.selector,
+    find_text: args.find_text,
+    role: args.role,
     value: args.value,
     text: args.text,
     dblClick: args.dblClick === true
@@ -551,13 +678,19 @@ async function interactWithElement(tool, args = {}, action = "click") {
   if (!result || result.ok !== true) {
     return toolError(tool, result?.error_code || "action_failed", result?.message || "Element action failed.", {
       target: result?.target,
-      candidates: result?.candidates || [],
+      ...(result?.candidates?.length ? { candidates: result.candidates } : {}),
       next_actions: result?.candidates?.length
         ? [{ tool: "click_element", reason: "Retry with one of the returned candidate uids." }, { tool: "take_snapshot", reason: "Refresh page state." }]
         : [{ tool: "take_snapshot", reason: "Refresh page state and choose a current element uid." }]
     });
   }
-  const success = toolOk(tool, result.message, { target: result.target, value: result.value });
+  const success = toolOk(tool, result.message, {
+    target: result.target,
+    value: result.value,
+    ...(typeof result.checked_before === "boolean"
+      ? { checked_before: result.checked_before, checked_after: result.checked_after }
+      : {})
+  });
   if (result.target) {
     success.element = { role: result.target.role, name: result.target.name, tag: result.target.tag };
   }
@@ -592,23 +725,43 @@ async function waitForPageState(args = {}) {
   const result = await runScriptInActiveTab((input) => {
     return new Promise((resolve) => {
       const start = Date.now();
+      // Mirrors normText inside pageAgentScript; the two are serialized separately.
+      const normText = (value) => String(value ?? "").replace(/[\u00a0\u2007\u202f]/g, " ").replace(/\s+/g, " ").trim();
+      const settleMs = Number(input.settle_ms) > 0 ? Number(input.settle_ms) : 0;
+      let lastMutation = Date.now();
+      let observer = null;
+      if (settleMs && document.body) {
+        observer = new MutationObserver(() => { lastMutation = Date.now(); });
+        // Attributes are excluded: one class-toggling spinner or carousel would
+        // reset the settle timer forever and burn the whole timeout.
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      }
+      const finish = (value) => {
+        if (observer) observer.disconnect();
+        resolve(value);
+      };
       const check = () => {
-        const textOk = input.text ? (document.body?.innerText || "").includes(input.text) : true;
-        const selectorOk = input.selector ? !!document.querySelector(input.selector) : true;
-        const urlOk = input.url_contains ? location.href.includes(input.url_contains) : true;
-        if (textOk && selectorOk && urlOk) {
-          resolve({ ok: true, url: location.href, elapsed_ms: Date.now() - start });
+        const present = (found) => (input.absent === true ? !found : found);
+        const textOk = input.text
+          ? present(normText(document.body?.innerText).toLowerCase().includes(normText(input.text).toLowerCase()))
+          : true;
+        const selectorOk = input.selector ? present(!!document.querySelector(input.selector)) : true;
+        const urlOk = input.url_contains ? present(location.href.includes(input.url_contains)) : true;
+        const settled = settleMs ? Date.now() - lastMutation >= settleMs : true;
+        if (textOk && selectorOk && urlOk && settled) {
+          finish({ ok: true, url: location.href, elapsed_ms: Date.now() - start });
           return;
         }
         if (Date.now() - start >= input.timeout) {
-          resolve({
+          finish({
             ok: false,
             url: location.href,
             elapsed_ms: Date.now() - start,
             text_matched: textOk,
             selector_matched: selectorOk,
             url_matched: urlOk,
-            text_preview: (document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 500)
+            ...(settleMs ? { settled } : {}),
+            text_preview: normText(document.body?.innerText).slice(0, 500)
           });
           return;
         }
@@ -833,6 +986,106 @@ async function searchScriptsInPage(args = {}) {
   return toolOk("search_scripts", `Found ${result.match_count} match(es) across ${result.scanned_count} script(s).`, result);
 }
 
+// A click that downloads a file leaves no trace in the page, so the saved path
+// is only knowable through chrome.downloads.
+async function listDownloadsForTool(args = {}) {
+  if (!chrome.downloads) {
+    return toolError("list_downloads", "missing_permission", "The optional \"downloads\" permission is not granted. Grant it in Margin settings to list downloads.", { recoverable: false });
+  }
+  const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 50);
+  const query = { orderBy: ["-startTime"], limit };
+  if (args.state) query.state = String(args.state);
+  const items = await chrome.downloads.search(query);
+  const downloads = items.map((item) => ({
+    id: item.id,
+    filename: item.filename,
+    url: item.url,
+    state: item.state,
+    bytesReceived: item.bytesReceived,
+    totalBytes: item.totalBytes,
+    startTime: item.startTime,
+    exists: item.exists,
+    ...(item.danger && item.danger !== "safe" && item.danger !== "accepted" ? { danger: item.danger } : {})
+  }));
+  return JSON.stringify({ count: downloads.length, downloads }, null, 2);
+}
+
+// DOM.setFileInputFiles is the only way to attach a file: the native picker is
+// an OS dialog no page or extension API can drive.
+async function setFileInputFilesViaDebugger(tool, selector, paths) {
+  const tabId = await getActiveTabId();
+  if (!tabId) throw new Error("No active tab in current window.");
+  const keepAttached = isNetworkCaptureActive(tabId);
+
+  return new Promise((resolve) => {
+    chrome.debugger.attach({ tabId }, "1.3", () => {
+      const err = chrome.runtime.lastError;
+      if (err && !err.message.includes("Already attached") && !err.message.includes("debugger is already attached")) {
+        resolve(toolError(tool, "debugger_attach_failed", `Could not attach the debugger: ${err.message}`));
+        return;
+      }
+      const finish = (value) => {
+        if (keepAttached) { resolve(value); return; }
+        chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; resolve(value); });
+      };
+      const fail = (message) => finish(toolError(tool, "set_files_failed", message, {
+        next_actions: [{ tool, reason: "Check that the paths are absolute and the target is a file input, then retry." }]
+      }));
+
+      chrome.debugger.sendCommand({ tabId }, "DOM.getDocument", {}, (doc) => {
+        if (chrome.runtime.lastError) { fail(chrome.runtime.lastError.message); return; }
+        const rootNodeId = doc?.root?.nodeId;
+        if (!rootNodeId) { fail("The page document could not be read."); return; }
+        chrome.debugger.sendCommand({ tabId }, "DOM.querySelector", { nodeId: rootNodeId, selector }, (found) => {
+          if (chrome.runtime.lastError) { fail(chrome.runtime.lastError.message); return; }
+          if (!found?.nodeId) {
+            finish(toolError(tool, "target_not_found", `The debugger found no element for selector "${selector}".`));
+            return;
+          }
+          chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", { files: paths, nodeId: found.nodeId }, () => {
+            if (chrome.runtime.lastError) { fail(chrome.runtime.lastError.message); return; }
+            finish(toolOk(tool, `Attached ${paths.length} file(s) to the file input.`, { selector, files: paths }));
+          });
+        });
+      });
+    });
+  });
+}
+
+async function setFileInputForTool(args = {}) {
+  const tool = "set_file_input";
+  if (!args.uid && !args.selector && !args.find_text) {
+    return toolError(tool, "missing_target", "set_file_input requires uid, selector, or find_text.", { recoverable: false });
+  }
+  const paths = Array.isArray(args.paths) ? args.paths.map(String).filter((path) => path.trim()) : [];
+  if (paths.length === 0) {
+    return toolError(tool, "missing_paths", "set_file_input requires paths, a non-empty array of absolute file paths.", { recoverable: false });
+  }
+
+  const located = await interactWithElement(tool, { uid: args.uid, selector: args.selector, find_text: args.find_text, role: args.role }, "locate");
+  if (located.ok !== true) return located;
+  const target = located.data?.target || {};
+  try {
+    if (target.tag !== "input" || target.type !== "file") {
+      return toolError(tool, "not_a_file_input", `Target is a <${target.tag}${target.type ? ` type="${target.type}"` : ""}>, not a file input. Target the <input type="file"> element itself.`, {
+        target,
+        recoverable: false
+      });
+    }
+    if (target.enabled === false) {
+      return toolError(tool, "target_disabled", "Element exists but is disabled.", { target });
+    }
+    return await setFileInputFilesViaDebugger(tool, target.locate_selector || target.selector, paths);
+  } finally {
+    // The stamp is a one-shot handle; it must not survive the call either way.
+    try {
+      await runScriptInActiveTab(() => {
+        document.querySelectorAll("[data-margin-locate]").forEach((node) => node.removeAttribute("data-margin-locate"));
+      });
+    } catch {}
+  }
+}
+
 export async function executePageTool(name, args = {}) {
   try {
     switch (name) {
@@ -901,8 +1154,8 @@ ${domResult.outerHtml}
       }
 
       case "click_element": {
-        if (!args.uid && !args.selector) {
-          return toolError("click_element", "missing_target", "click_element requires uid or selector.", { recoverable: false });
+        if (!args.uid && !args.selector && !args.find_text) {
+          return toolError("click_element", "missing_target", "click_element requires uid, selector, or find_text.", { recoverable: false });
         }
         return await interactWithElement("click_element", args, "click");
       }
@@ -917,7 +1170,7 @@ ${domResult.outerHtml}
       }
 
       case "type_text": {
-        if (!args.uid && !args.selector) {
+        if (!args.uid && !args.selector && !args.find_text) {
           const focused = await runScriptInActiveTab((text, submitKey) => {
             const el = document.activeElement;
             if (!el || el === document.body) return { ok: false, error_code: "no_focused_input", message: "No focused input is available." };
@@ -947,8 +1200,8 @@ ${domResult.outerHtml}
       }
 
       case "fill_element": {
-        if (!args.uid && !args.selector) {
-          return toolError("fill_element", "missing_target", "fill_element requires uid or selector.", { recoverable: false });
+        if (!args.uid && !args.selector && !args.find_text) {
+          return toolError("fill_element", "missing_target", "fill_element requires uid, selector, or find_text.", { recoverable: false });
         }
         return await interactWithElement("fill_element", args, "fill");
       }
@@ -974,8 +1227,8 @@ ${domResult.outerHtml}
       }
 
       case "hover_element": {
-        if (!args.uid && !args.selector) {
-          return toolError("hover_element", "missing_target", "hover_element requires uid or selector.", { recoverable: false });
+        if (!args.uid && !args.selector && !args.find_text) {
+          return toolError("hover_element", "missing_target", "hover_element requires uid, selector, or find_text.", { recoverable: false });
         }
         return await interactWithElement("hover_element", args, "hover");
       }
@@ -1021,6 +1274,14 @@ ${domResult.outerHtml}
 
       case "search_scripts": {
         return await searchScriptsInPage(args);
+      }
+
+      case "list_downloads": {
+        return await listDownloadsForTool(args);
+      }
+
+      case "set_file_input": {
+        return await setFileInputForTool(args);
       }
 
       case "start_network_capture":

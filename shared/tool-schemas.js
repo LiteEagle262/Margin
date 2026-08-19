@@ -65,12 +65,14 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "click_element",
-      description: "Click a page element. Prefer uid from take_snapshot. Selector is supported as a fallback. Set include_snapshot to true after actions that should change page state.",
+      description: "Click a page element. Prefer uid from take_snapshot. Selector and find_text are supported as fallbacks. Set include_snapshot to true after actions that should change page state. Clicking a checkbox or radio returns checked_before/checked_after; framework-controlled toggles apply state asynchronously, so re-read the element to confirm.",
       parameters: {
         type: "object",
         properties: {
           uid: { type: "string", description: "Element uid from the latest take_snapshot result." },
           selector: { type: "string", description: "Fallback CSS selector of the target element." },
+          find_text: { type: "string", description: "Target by visible label text instead of uid or selector. Case-insensitive and whitespace-normalized; an exact match wins, otherwise substring. Prefer this on single-page apps, where uids go stale on every re-render and ids are randomized per load. Several matches return error_code \"ambiguous_target\" with candidate uids." },
+          role: { type: "string", description: "Narrow find_text to one role, e.g. button, link, textbox, checkbox." },
           dblClick: { type: "boolean", description: "Double click the target. Defaults to false." },
           include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
         }
@@ -81,12 +83,14 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "fill_element",
-      description: "Set the value of an input, textarea, select, checkbox, or radio element. Prefer uid from take_snapshot; selector is a fallback.",
+      description: "Set the value of an input, textarea, select, checkbox, or radio element. Prefer uid from take_snapshot; selector and find_text are fallbacks. Checkbox and radio results carry checked_before/checked_after; framework-controlled toggles apply state asynchronously, so re-read the element to confirm.",
       parameters: {
         type: "object",
         properties: {
           uid: { type: "string", description: "Element uid from the latest take_snapshot result." },
           selector: { type: "string", description: "Fallback CSS selector of the target control." },
+          find_text: { type: "string", description: "Target by the control's visible label instead of uid or selector. Case-insensitive and whitespace-normalized; exact match wins, otherwise substring. Prefer this on single-page apps, where uids go stale on every re-render. Several matches return error_code \"ambiguous_target\" with candidate uids." },
+          role: { type: "string", description: "Narrow find_text to one role, e.g. textbox, checkbox, combobox." },
           value: { type: "string", description: "Value to enter. Use true/false for checkboxes and radio controls." },
           include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
         },
@@ -109,6 +113,8 @@ export const BROWSER_TOOLS = [
               properties: {
                 uid: { type: "string", description: "Element uid from take_snapshot." },
                 selector: { type: "string", description: "Fallback CSS selector." },
+                find_text: { type: "string", description: "Fallback: the control's visible label, matched case-insensitively. See fill_element." },
+                role: { type: "string", description: "Narrow find_text to one role." },
                 value: { type: "string", description: "Value to enter." }
               },
               required: ["value"]
@@ -145,6 +151,8 @@ export const BROWSER_TOOLS = [
         properties: {
           uid: { type: "string", description: "Optional element uid from take_snapshot." },
           selector: { type: "string", description: "Optional fallback CSS selector of the input element." },
+          find_text: { type: "string", description: "Optional fallback: target the input by its visible label, matched case-insensitively and whitespace-normalized. Prefer this on single-page apps, where uids go stale on every re-render. This is the locator, not the value — the value stays in text." },
+          role: { type: "string", description: "Narrow find_text to one role, e.g. textbox." },
           text: { type: "string", description: "The text value to type." },
           submitKey: { type: "string", description: "Optional key to press after typing, e.g. Enter, Tab, Escape." },
           include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
@@ -157,12 +165,14 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "hover_element",
-      description: "Hover over a page element. Prefer uid from take_snapshot; selector is a fallback.",
+      description: "Hover over a page element. Prefer uid from take_snapshot; selector and find_text are fallbacks.",
       parameters: {
         type: "object",
         properties: {
           uid: { type: "string", description: "Element uid from the latest take_snapshot result." },
           selector: { type: "string", description: "Fallback CSS selector." },
+          find_text: { type: "string", description: "Target by visible label text instead of uid or selector. Case-insensitive and whitespace-normalized; exact match wins, otherwise substring. Prefer this on single-page apps, where uids go stale on every re-render. Several matches return error_code \"ambiguous_target\" with candidate uids." },
+          role: { type: "string", description: "Narrow find_text to one role, e.g. button, link, menuitem." },
           include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
         }
       }
@@ -191,9 +201,11 @@ export const BROWSER_TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          text: { type: "string", description: "Text that should appear on the page." },
+          text: { type: "string", description: "Text that should appear on the page. Matched case-insensitively with whitespace and non-breaking spaces normalized." },
           selector: { type: "string", description: "CSS selector that should appear." },
           url_contains: { type: "string", description: "Substring expected in the current URL." },
+          absent: { type: "boolean", description: "Invert every supplied condition (text, selector, and url_contains): wait until they are gone instead of present. Use this to detect leaving a single-page-app screen whose URL never changes — wait for the text of the screen you are on to disappear." },
+          settle_ms: { type: "number", description: "Wait until the DOM has had no mutations for this many milliseconds before the other conditions count as final. Use it when a click triggers a re-render and you want the page to change and go quiet; on its own, with no text/selector/url_contains, it just waits for the DOM to stop changing." },
           timeout: { type: "number", description: "Maximum wait time in milliseconds. Defaults to 8000." },
           include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false; set true to opt in." }
         }
@@ -348,6 +360,41 @@ export const BROWSER_TOOLS = [
       name: "list_authenticator_domains",
       description: "List domains that have saved authenticator manual keys. Does not reveal the keys.",
       parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_downloads",
+      description: "List the browser's recent downloads, newest first, with the full path each file was saved to. Downloads land silently in the OS Downloads folder and fire no page event, so after clicking a link that downloads a file, call this to learn the saved path and completion state.",
+      parameters: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "Maximum downloads to return. Defaults to 10, capped at 50." },
+          state: { type: "string", enum: ["in_progress", "complete", "interrupted"], description: "Only return downloads in this state." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_file_input",
+      description: "Set the files on a page's file input without opening the native file picker, which cannot be driven otherwise. Target the <input type=\"file\"> element itself, not the styled button in front of it — a file input is often hidden, so find it with a CSS selector such as input[type=file] rather than expecting it in a snapshot. Chrome fires the page's input and change events itself.",
+      parameters: {
+        type: "object",
+        properties: {
+          uid: { type: "string", description: "Element uid of the file input from take_snapshot." },
+          selector: { type: "string", description: "CSS selector of the file input, e.g. input[type=file]. Usually the most reliable target." },
+          find_text: { type: "string", description: "Target by visible label text instead of uid or selector. Only works when the file input itself is visible." },
+          paths: {
+            type: "array",
+            items: { type: "string" },
+            description: "Absolute paths of the files to attach, as the user's operating system spells them."
+          }
+        },
+        required: ["paths"]
+      }
     }
   }
 ];
