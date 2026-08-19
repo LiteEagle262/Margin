@@ -10,7 +10,7 @@ const TOOL_ACCESS_GROUPS = [
       "take_snapshot", "click_element", "fill_element", "fill_form", "type_text",
       "hover_element", "press_key", "scroll_page", "wait_for", "navigate",
       "get_active_tab", "list_tabs", "take_screenshot", "get_dom", "run_js", "evaluate_script",
-      "browser_batch"
+      "browser_batch", "list_downloads", "set_file_input"
     ]
   },
   {
@@ -55,10 +55,12 @@ const RISKY_DEFAULT_OFF = new Set([
   "get_storage",
   "http_request",
   "list_authenticator_domains",
+  "list_downloads",
   "list_scripts",
   "rename_file",
   "run_js",
   "search_scripts",
+  "set_file_input",
   "start_network_capture",
   "stop_network_capture",
   "take_screenshot",
@@ -66,6 +68,7 @@ const RISKY_DEFAULT_OFF = new Set([
 
 const OPTIONAL_PERMISSION_BY_TOOL = new Map([
   ["get_cookies", "cookies"],
+  ["list_downloads", "downloads"],
 ]);
 
 export const DEFAULT_ENABLED_TOOLS = new Set(
@@ -90,6 +93,8 @@ const TOOL_LABELS = {
   run_js: "Raw JS",
   evaluate_script: "Evaluate function",
   browser_batch: "Batch actions",
+  list_downloads: "List downloads",
+  set_file_input: "Attach files",
   start_network_capture: "Start network capture",
   stop_network_capture: "Stop network capture",
   get_network_logs: "List network logs",
@@ -197,13 +202,26 @@ function initToolAccessSettings() {
 
   enableAllBtn?.addEventListener("click", async () => {
     const optionalPermissions = [...new Set(OPTIONAL_PERMISSION_BY_TOOL.values())];
-    const granted = await chrome.permissions.request({ permissions: optionalPermissions });
-    list?.querySelectorAll(".tool-access-input").forEach((input) => {
-      const needsOptionalPermission = OPTIONAL_PERMISSION_BY_TOOL.has(input.dataset.toolName);
-      input.checked = granted || !needsOptionalPermission;
-    });
-    if (!granted) {
-      showToast("Optional cookie access was not granted; cookie inspection remains off");
+    const missing = [];
+    for (const permission of optionalPermissions) {
+      if (!(await chrome.permissions.contains({ permissions: [permission] }))) missing.push(permission);
+    }
+    // One prompt for only what is missing; a denial must not turn off a tool
+    // whose own permission was already granted.
+    if (missing.length) await chrome.permissions.request({ permissions: missing });
+    const ungranted = [];
+    for (const input of [...(list?.querySelectorAll(".tool-access-input") || [])]) {
+      const permission = OPTIONAL_PERMISSION_BY_TOOL.get(input.dataset.toolName);
+      if (!permission) {
+        input.checked = true;
+        continue;
+      }
+      const granted = await chrome.permissions.contains({ permissions: [permission] });
+      input.checked = granted;
+      if (!granted && !ungranted.includes(permission)) ungranted.push(permission);
+    }
+    if (ungranted.length) {
+      showToast(`Optional permissions (${ungranted.join(", ")}) were not granted; the tools that need them remain off`);
     }
     settings.toolAccess = collectToolAccessFromUI();
     renderToolAccessSettings();

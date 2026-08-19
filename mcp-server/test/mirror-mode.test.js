@@ -85,6 +85,9 @@ async function initialize(copy) {
     clientInfo: { name: "mirror-test", version: "1.0.0" }
   });
   assert.equal(result.serverInfo.name, "margin-browser");
+  // Deferred-schema clients only see this at the handshake, and every copy is
+  // its own process, so each one has to carry it.
+  assert.match(result.instructions, /browser_batch/);
   copy.send({ method: "notifications/initialized" });
 }
 

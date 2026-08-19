@@ -37,6 +37,8 @@ Every tool can be turned on or off individually under **Settings → Tool Access
 
 - **Page** — snapshots, `get_dom`, screenshots, clicks, form fills, hover, key presses, scrolling, typing,
   waiting, navigation, tab listing, and `run_js`. `browser_batch` runs a whole sequence in one call.
+  `set_file_input` attaches files to an upload field without the native picker, and `list_downloads`
+  reports where downloaded files were saved (asks for the optional `downloads` permission).
 - **Network** — start and stop request capture, then list, search, inspect, or clear the captured log.
 - **Recon** — `http_request`, `get_storage`, page script listing and source search, `get_cookies` (asks for the
   optional `cookies` permission), and TOTP codes for domains whose manual key you saved.

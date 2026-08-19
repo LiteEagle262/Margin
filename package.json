@@ -1,6 +1,6 @@
 {
   "name": "margin-extension",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "description": "Open-source AI browser agent for Chrome's side panel",
