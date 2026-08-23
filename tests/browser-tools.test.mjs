@@ -41,6 +41,10 @@ function element(tag, props = {}) {
     disabled: props.disabled === true,
     isContentEditable: props.contentEditable === true,
     hidden: props.hidden === true,
+    scrollTop: props.scrollTop || 0,
+    scrollHeight: props.scrollHeight || 0,
+    clientHeight: props.clientHeight || 0,
+    overflowY: props.overflowY || "visible",
     labels: props.labels,
     selector: props.selector || "",
     attrs: props.attrs || {},
@@ -52,6 +56,9 @@ function element(tag, props = {}) {
     removeAttribute(attr) { delete this.attrs[attr]; },
     contains(other) {
       return other === this || this.children.some((child) => child.contains(other));
+    },
+    querySelectorAll(selector) {
+      return selector.includes("contenteditable") ? this.children : [];
     },
     getBoundingClientRect() {
       return this.hidden ? { x: 0, y: 0, width: 0, height: 0 } : { x: 1, y: 2, width: 100, height: 20 };
@@ -71,18 +78,22 @@ function installDom(nodes) {
   globalThis.document = {
     title: "Test page",
     body,
+    scrollingElement: element("html", { scrollHeight: 4000, clientHeight: 800 }),
     getElementById: () => null,
     // The injected code asks for exactly two selectors; only the interactive
     // one has to resolve for these tests.
     querySelectorAll: (selector) => {
       if (selector === "[data-margin-locate]") return nodes.filter((node) => node.getAttribute("data-margin-locate"));
+      const named = nodes.filter((node) => node.selector === selector);
+      if (named.length) return named;
       return selector.includes("contenteditable") ? nodes : [];
     },
     querySelector: (selector) => nodes.find((node) => node.selector === selector) || null
   };
   globalThis.getComputedStyle = (el) => ({
     visibility: el.hidden ? "hidden" : "visible",
-    display: el.hidden ? "none" : "block"
+    display: el.hidden ? "none" : "block",
+    overflowY: el.overflowY
   });
   globalThis.CSS = { escape: (value) => value };
   globalThis.location = { href: "https://example.com/form" };
@@ -92,6 +103,8 @@ function installDom(nodes) {
   globalThis.scrollY = 0;
   globalThis.MouseEvent = class extends Event {};
   globalThis.KeyboardEvent = class extends Event {};
+  // Every mouse event the injected code builds carries view: window.
+  globalThis.window = globalThis;
   return nodes;
 }
 
@@ -983,6 +996,354 @@ test("successful uid interactions report the element they touched", async () => 
   const filled = await executePageTool("fill_element", { uid: fieldUid, value: "a@b.com" });
   assert.equal(filled.ok, true);
   assert.deepEqual(filled.element, { role: "textbox", name: "Email", tag: "input" });
+});
+
+// An 80-element budget on Outlook went almost entirely to ribbon chrome, so the
+// message list the caller asked for never made the cut.
+test("a presentation wrapper is filtered out of a snapshot", () => {
+  const spacer = element("span", { attrs: { role: "presentation" }, innerText: "Ribbon spacer" });
+  const reply = element("button", { innerText: "Reply" });
+
+  const result = snapshot([spacer, reply]);
+  assert.deepEqual(result.elements.map((item) => item.name), ["Reply"]);
+  assert.equal(result.filtered_count, 1);
+});
+
+test("an unnamed 1x1 wrapper is filtered out of a snapshot", () => {
+  const wrapper = element("div", { attrs: { tabindex: "0" } });
+  wrapper.getBoundingClientRect = () => ({ x: 0, y: 0, width: 1, height: 1 });
+  const reply = element("button", { innerText: "Reply" });
+
+  const result = snapshot([wrapper, reply]);
+  assert.deepEqual(result.elements.map((item) => item.name), ["Reply"]);
+  assert.equal(result.filtered_count, 1);
+});
+
+test("a 1x0 toggle behind a visible label survives the noise filter", () => {
+  const { input } = styledToggle("radio", "Direct deposit");
+
+  const result = snapshot([input]);
+  assert.equal(result.element_count, 1);
+  assert.equal(result.elements[0].role, "radio");
+  assert.equal(result.filtered_count, 0);
+});
+
+test("verbose turns the noise filter off", () => {
+  installDom([element("span", { attrs: { role: "presentation" }, innerText: "Ribbon spacer" })]);
+
+  const result = pageAgentScript({ op: "snapshot", limit: 80, verbose: true });
+  assert.equal(result.element_count, 1);
+  assert.equal(result.filtered_count, 0);
+});
+
+test("scope narrows the listing to one region", () => {
+  const inside = element("button", { innerText: "Reply" });
+  const outside = element("button", { innerText: "New message" });
+  const pane = element("div", { selector: "#reading-pane", attrs: { role: "region" } });
+  pane.children = [inside];
+  installDom([pane, inside, outside]);
+
+  const result = pageAgentScript({ op: "snapshot", limit: 80, verbose: false, scope: "#reading-pane" });
+  assert.deepEqual(result.elements.map((item) => item.name), ["Reply"]);
+  assert.equal(result.scope, "#reading-pane", "the caller can see the snapshot is partial");
+});
+
+test("a scope that matches nothing is a tool error, not an empty snapshot", async () => {
+  installDom([element("button", { innerText: "Reply" })]);
+  stubScriptingInActiveTab();
+
+  const result = await executePageTool("take_snapshot", { scope: "#nothing-here" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "scope_not_found");
+  assert.deepEqual(result.next_actions.map((entry) => entry.tool), ["take_snapshot"]);
+});
+
+test("a snapshot reports what the filter and the limit left out", () => {
+  const spacer = element("span", { attrs: { role: "none" }, innerText: "spacer" });
+  installDom([spacer, element("button", { innerText: "Reply" }), element("button", { innerText: "Forward" })]);
+
+  const result = pageAgentScript({ op: "snapshot", limit: 1, verbose: false });
+  assert.equal(result.element_count, 1);
+  assert.equal(result.filtered_count, 1);
+  assert.equal(result.truncated, true);
+});
+
+// Outlook's inbox scrolls in an inner pane, so scrolling the window left the
+// list exactly where it was.
+test("scroll_page moves the nearest scrollable ancestor of its target", async () => {
+  const pane = element("div", { attrs: { role: "list" }, scrollHeight: 4000, clientHeight: 600, overflowY: "auto" });
+  const row = element("div", { innerText: "Quarterly report", attrs: { role: "listitem" } });
+  installDom([pane, row]);
+  row.parentElement = pane;
+  stubScriptingInActiveTab();
+
+  const result = await executePageTool("scroll_page", { find_text: "Quarterly report", direction: "down", amount: 400 });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.scroll_top_before, 0);
+  assert.equal(result.data.scroll_top_after, 400);
+  assert.equal(result.data.moved, true);
+  assert.notEqual(result.data.scroller, "window", "the inner pane scrolled, not the page");
+});
+
+// A virtualized list clamps the write and the first attempt silently did
+// nothing, so a no-op scroll has to be visible in the result.
+test("a clamped scroller reports moved false without failing", () => {
+  const pane = element("div", { innerText: "Message list", attrs: { role: "list" }, scrollHeight: 4000, clientHeight: 600, overflowY: "auto" });
+  Object.defineProperty(pane, "scrollTop", { get() { return 3400; }, set() {}, configurable: true });
+  installDom([pane]);
+
+  const result = pageAgentScript({ op: "interact", action: "scroll", find_text: "Message list" });
+  assert.equal(result.ok, true);
+  assert.equal(result.moved, false);
+  assert.equal(result.scroll_top_before, 3400);
+  assert.match(result.message, /did not move/);
+});
+
+test("scroll_page with no target scrolls the page itself", async () => {
+  installDom([element("button", { innerText: "Reply" })]);
+  stubScriptingInActiveTab();
+
+  const result = await executePageTool("scroll_page", { direction: "down", amount: 300 });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.scroller, "window");
+  assert.equal(result.data.scroll_top_after, 300);
+});
+
+// Records chrome.tabs writes so a test can assert navigate never touched the
+// tab the user was on.
+function stubTabsForNavigate() {
+  const calls = [];
+  globalThis.chrome.tabs.query = async () => [{ id: 7, url: "https://example.com/form", title: "Test page", windowId: 1 }];
+  globalThis.chrome.tabs.create = async (props) => { calls.push({ method: "create", props }); return { id: 99, ...props }; };
+  globalThis.chrome.tabs.update = async (tabId, props) => { calls.push({ method: "update", tabId, props }); return { id: tabId, ...props }; };
+  return calls;
+}
+
+// Returns a restore function.
+function stubLatchedTab(tabId) {
+  const originalSession = globalThis.chrome.storage.session.get;
+  const originalGet = globalThis.chrome.tabs.get;
+  globalThis.chrome.storage.session.get = async () => ({ latchedTab: { tabId, url: "https://outlook.example.com/mail", title: "Mail" } });
+  globalThis.chrome.tabs.get = async (id) => ({ id, url: "https://outlook.example.com/mail", title: "Mail", windowId: 1 });
+  return () => {
+    globalThis.chrome.storage.session.get = originalSession;
+    globalThis.chrome.tabs.get = originalGet;
+  };
+}
+
+test("navigate with new_tab opens a tab instead of reusing the current one", async () => {
+  const calls = stubTabsForNavigate();
+
+  const result = await executePageTool("navigate", { url: "https://mail.example.com/", new_tab: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.tab_id, 99);
+  assert.equal(result.data.new_tab, true);
+  assert.deepEqual(calls, [{ method: "create", props: { url: "https://mail.example.com/", active: true } }]);
+});
+
+test("navigate with tab_id drives that tab and activates it", async () => {
+  const calls = stubTabsForNavigate();
+
+  const result = await executePageTool("navigate", { url: "https://mail.example.com/", tab_id: 12 });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.tab_id, 12);
+  assert.deepEqual(calls, [{ method: "update", tabId: 12, props: { url: "https://mail.example.com/", active: true } }]);
+});
+
+test("navigate with both new_tab and tab_id is rejected instead of picking one", async () => {
+  const calls = stubTabsForNavigate();
+
+  const result = await executePageTool("navigate", { url: "https://mail.example.com/", new_tab: true, tab_id: 12 });
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "invalid_arguments");
+  assert.equal(calls.length, 0);
+});
+
+// Otherwise the caller navigates one tab and silently drives another.
+test("navigating away from the latched tab says the other tools stay latched", async () => {
+  const calls = stubTabsForNavigate();
+  const restore = stubLatchedTab(7);
+  try {
+    const result = await executePageTool("navigate", { url: "https://mail.example.com/", new_tab: true });
+    assert.equal(result.ok, true);
+    assert.match(result.data.note, /latched tab 7/);
+    assert.equal(calls[0].method, "create");
+  } finally {
+    restore();
+  }
+});
+
+// A second Chrome window full of tabs is invisible to a currentWindow query.
+test("list_tabs enumerates every window and marks the latched tab", async () => {
+  const queries = [];
+  globalThis.chrome.tabs.query = async (query) => {
+    queries.push(query);
+    const inbox = { id: 7, url: "https://outlook.example.com/mail", title: "Mail", active: true, windowId: 1 };
+    const other = { id: 12, url: "https://docs.example.com/", title: "Docs", active: true, windowId: 2 };
+    return query.currentWindow ? [inbox] : [inbox, other];
+  };
+  const restore = stubLatchedTab(12);
+  try {
+    const listed = JSON.parse(await executePageTool("list_tabs", {}));
+    assert.deepEqual(queries[0], {}, "every window, not just the current one");
+    assert.equal(listed.count, 2);
+    assert.equal(listed.current_window_id, 1);
+    assert.deepEqual(listed.tabs.map((tab) => tab.windowId), [1, 2]);
+    assert.deepEqual(listed.tabs.map((tab) => tab.latched), [undefined, true]);
+  } finally {
+    restore();
+  }
+});
+
+// A contenteditable renders a textContent write with its newlines collapsed, so
+// only a <br> or an insertText survives as a line break.
+function editableBody() {
+  const el = element("div", { contentEditable: true, selector: "#compose-body", attrs: { role: "textbox" } });
+  let rendered = "";
+  Object.defineProperty(el, "textContent", {
+    get() { return rendered; },
+    set(value) { rendered = String(value).replace(/\n/g, " "); },
+    configurable: true
+  });
+  Object.defineProperty(el, "innerText", {
+    get() { return rendered; },
+    configurable: true
+  });
+  Object.defineProperty(el, "innerHTML", {
+    set(value) { rendered = String(value).replace(/<br>/g, "\n").replace(/&amp;/g, "&"); },
+    configurable: true
+  });
+  return el;
+}
+
+// An email body typed into Outlook's compose pane lost every paragraph break.
+test("type_text keeps the line breaks of a contenteditable body", async () => {
+  const body = editableBody();
+  installDom([body]);
+  stubScriptingInActiveTab();
+
+  const result = await executePageTool("type_text", { selector: "#compose-body", text: "Hi Kayla,\n\nThanks for the update." });
+  assert.equal(result.ok, true);
+  assert.equal(body.innerText, "Hi Kayla,\n\nThanks for the update.");
+});
+
+test("right-click dispatches a contextmenu event instead of a plain click", () => {
+  const events = [];
+  const row = element("div", { innerText: "Quarterly report", attrs: { role: "listitem" } });
+  row.dispatchEvent = (event) => { events.push(event.type); return true; };
+  installDom([row]);
+
+  const result = pageAgentScript({ op: "interact", action: "click", find_text: "Quarterly report", rightClick: true });
+  assert.equal(result.ok, true);
+  assert.deepEqual(events, ["pointerdown", "mousedown", "contextmenu", "mouseup"]);
+  assert.equal(row.clicks, 0);
+});
+
+test("right-click combined with dblClick is rejected rather than silently winning", () => {
+  const events = [];
+  const row = element("div", { innerText: "Quarterly report", attrs: { role: "listitem" } });
+  row.dispatchEvent = (event) => { events.push(event.type); return true; };
+  installDom([row]);
+
+  const result = pageAgentScript({ op: "interact", action: "click", find_text: "Quarterly report", rightClick: true, dblClick: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "invalid_arguments");
+  assert.deepEqual(events, []);
+});
+
+// Outlook's image-insert input matched the same selector as the attachment
+// input, the first match silently ate the PDF, and nothing said so.
+test("set_file_input with two matching inputs returns candidates carrying accept", async () => {
+  const attachment = element("input", { hidden: true, selector: "input[type=file]", attrs: { type: "file", accept: ".pdf,.docx", name: "attachment" } });
+  const inlineImage = element("input", { hidden: true, selector: "input[type=file]", attrs: { type: "file", accept: "image/*", name: "inline-image" } });
+  inlineImage.multiple = true;
+  installDom([attachment, inlineImage]);
+  stubScriptingInActiveTab();
+  const commands = stubDebugger();
+
+  const result = await executePageTool("set_file_input", { selector: "input[type=file]", paths: ["C:\\tmp\\a.pdf"] });
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "ambiguous_target");
+  assert.deepEqual(result.data.candidates.map((item) => item.accept), [".pdf,.docx", "image/*"]);
+  assert.deepEqual(result.data.candidates.map((item) => item.multiple), [false, true]);
+  assert.equal(commands.length, 0, "nothing is attached until the caller picks one");
+});
+
+// One persistent scope rejected a second call that re-declared a const from the
+// first; replMode is what the DevTools console uses.
+test("run_js evaluates in REPL mode", async () => {
+  const commands = stubDebugger();
+  stubScriptingInActiveTab();
+
+  await executePageTool("run_js", { code: "const opt = 1; opt" });
+  const evaluate = commands.find((entry) => entry.method === "Runtime.evaluate");
+  assert.equal(evaluate.params.replMode, true);
+  assert.equal(evaluate.params.returnByValue, true);
+});
+
+// A wait started right after a navigate dies with a frame error that is gone by
+// the next attempt.
+test("a frame torn down mid-injection is retried instead of surfacing", async () => {
+  installDom([element("button", { innerText: "Submit order" })]);
+  stubScriptingInActiveTab();
+  const inject = globalThis.chrome.scripting.executeScript;
+  let attempts = 0;
+  globalThis.chrome.scripting.executeScript = async (options) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("Frame with ID 0 was removed.");
+    return inject(options);
+  };
+
+  const result = await executePageTool("wait_for", { text: "page body", timeout: 2000 });
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2);
+});
+
+// Chrome says "frame not found" when the real cause is a missing host
+// permission, and no number of retries will grant it.
+test("a missing host permission is not retried", async () => {
+  installDom([element("button", { innerText: "Submit order" })]);
+  stubScriptingInActiveTab();
+  let attempts = 0;
+  globalThis.chrome.scripting.executeScript = async () => {
+    attempts += 1;
+    throw new Error("Frame not found, or missing host permission.");
+  };
+
+  const result = await executePageTool("take_snapshot", {});
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "tool_execution_failed");
+  assert.equal(attempts, 1);
+});
+
+// A retried click re-fires against the document that replaced the dead frame:
+// a single-page app whose next screen carries the same button advances twice.
+test("a click torn down mid-injection is not retried", async () => {
+  installDom([element("button", { innerText: "Continue" })]);
+  stubScriptingInActiveTab();
+  let attempts = 0;
+  globalThis.chrome.scripting.executeScript = async () => {
+    attempts += 1;
+    throw new Error("Frame with ID 0 was removed.");
+  };
+
+  const result = await executePageTool("click_element", { find_text: "Continue" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "tool_execution_failed");
+  assert.equal(attempts, 1);
+});
+
+test("set_file_input is accepted as a batch action", async () => {
+  const calls = recordBackgroundCalls();
+  // set_file_input is opt-in in Tool Access, so the batch gate needs it on.
+  settings.toolAccess = { enabled: { set_file_input: true } };
+  const parsed = JSON.parse(await executeBatchTool({
+    actions: [{ tool: "set_file_input", arguments: { selector: "#upload", paths: ["C:\\tmp\\a.pdf"] } }]
+  }));
+  settings.toolAccess = {};
+
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(calls.map((call) => call.name), ["set_file_input"]);
 });
 
 test("long action output is truncated so a batch cannot flood the context", async () => {

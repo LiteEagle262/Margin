@@ -75,10 +75,13 @@ export const RECIPE_TOOL_SCHEMAS = [
 export const RECIPE_TOOL_NAMES = new Set(RECIPE_TOOL_SCHEMAS.map((tool) => tool.function.name));
 
 // Allowed step tools: the batchable ACTION set (observation and script tools
-// excluded). Still computed lazily so the set is built on first use rather than
-// at module eval; batch-core.js imports nothing, so there is no longer a cycle.
+// excluded, and set_file_input too — a recorded file attach would replay an
+// absolute path that is only valid on the machine and day it was recorded).
+// Still computed lazily so the set is built on first use rather than at module
+// eval; batch-core.js imports nothing, so there is no longer a cycle.
 const NON_STEP_BATCHABLE = new Set([
-  "take_snapshot", "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script"
+  "take_snapshot", "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script",
+  "set_file_input"
 ]);
 let stepToolsCache = null;
 function recipeStepTools() {
