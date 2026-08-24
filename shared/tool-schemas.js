@@ -228,7 +228,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "run_js",
-      description: "Execute arbitrary Javascript expression/source in the webpage context. Prefer evaluate_script for normal scripts because it avoids top-level return syntax errors. Calls share the page's global scope but run with REPL semantics: let/const may be re-declared across calls and top-level await works, so wrapping the snippet in an IIFE is unnecessary.",
+      description: "Execute arbitrary Javascript expression/source in the webpage context. Prefer evaluate_script for normal scripts because it avoids top-level return syntax errors. Calls share the page's global scope but run with REPL semantics: let/const may be re-declared across calls and top-level await works, so wrapping the snippet in an IIFE is unnecessary. A name the page itself declared, or one left behind by a call from an earlier session, still collides — use evaluate_script, whose function body gets its own scope, or pick a different name.",
       parameters: {
         type: "object",
         properties: {

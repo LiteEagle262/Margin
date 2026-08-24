@@ -506,6 +506,7 @@ function stubDebugger(overrides = {}) {
       commands.push({ method, params });
       if (method === "DOM.getDocument") return callback({ root: { nodeId: 1 } });
       if (method === "DOM.querySelector") return callback({ nodeId: overrides.nodeId === undefined ? 42 : overrides.nodeId });
+      if (method === "Runtime.evaluate" && overrides.evaluate) return callback(overrides.evaluate);
       return callback({});
     }
   };
@@ -1227,6 +1228,8 @@ test("type_text keeps the line breaks of a contenteditable body", async () => {
   assert.equal(body.innerText, "Hi Kayla,\n\nThanks for the update.");
 });
 
+// Measured against Outlook: with a pointerdown/mousedown/mouseup pair around it
+// the row was selected but no menu rendered; contextmenu alone opened the menu.
 test("right-click dispatches a contextmenu event instead of a plain click", () => {
   const events = [];
   const row = element("div", { innerText: "Quarterly report", attrs: { role: "listitem" } });
@@ -1235,7 +1238,7 @@ test("right-click dispatches a contextmenu event instead of a plain click", () =
 
   const result = pageAgentScript({ op: "interact", action: "click", find_text: "Quarterly report", rightClick: true });
   assert.equal(result.ok, true);
-  assert.deepEqual(events, ["pointerdown", "mousedown", "contextmenu", "mouseup"]);
+  assert.deepEqual(events, ["contextmenu"]);
   assert.equal(row.clicks, 0);
 });
 
@@ -1279,6 +1282,23 @@ test("run_js evaluates in REPL mode", async () => {
   const evaluate = commands.find((entry) => entry.method === "Runtime.evaluate");
   assert.equal(evaluate.params.replMode, true);
   assert.equal(evaluate.params.returnByValue, true);
+});
+
+// replMode does not forgive a name the page itself declared, and the bare
+// SyntaxError left the caller with no reload-free way forward.
+test("run_js maps a redeclaration SyntaxError to identifier_conflict", async () => {
+  stubDebugger({
+    evaluate: {
+      exceptionDetails: { exception: { description: "SyntaxError: Identifier 'opt' has already been declared" } }
+    }
+  });
+  stubScriptingInActiveTab();
+
+  const result = await executePageTool("run_js", { code: "const opt = 1; opt" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "identifier_conflict");
+  assert.match(result.message, /Identifier 'opt' has already been declared/);
+  assert.ok(result.next_actions.some((entry) => entry.tool === "evaluate_script"), JSON.stringify(result.next_actions));
 });
 
 // A wait started right after a navigate dies with a frame error that is gone by

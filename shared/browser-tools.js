@@ -803,13 +803,10 @@ export function pageAgentScript(input) {
         clientX: Math.round(rect.x + rect.width / 2),
         clientY: Math.round(rect.y + rect.height / 2)
       };
-      // Pages that open their own context menu listen for the pointer/mouse pair
-      // before contextmenu; Chrome's native menu is never involved.
-      const Pointer = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
-      actor.dispatchEvent(new Pointer("pointerdown", init));
-      actor.dispatchEvent(new MouseEvent("mousedown", init));
+      // A bare contextmenu is what opens a page's own menu; Outlook selected the
+      // row but rendered no menu until the surrounding pointerdown/mousedown/
+      // mouseup were dropped. Chrome's native menu is never involved.
       actor.dispatchEvent(new MouseEvent("contextmenu", init));
-      actor.dispatchEvent(new MouseEvent("mouseup", { ...init, buttons: 0 }));
       return { ok: true, message: "Element right-clicked.", target };
     }
     if (input.dblClick) {
@@ -1548,6 +1545,17 @@ ${domResult.outerHtml}
         if (result?.ok === false && String(result.message).includes("Illegal return statement")) {
           return toolError("run_js", "illegal_return", result.message, {
             next_actions: [{ tool: "evaluate_script", reason: "Use evaluate_script with a function body instead of top-level return." }]
+          });
+        }
+        // replMode only forgives a re-declaration made by another run_js call in
+        // the same session; a binding the page's own script or an older call left
+        // in the global lexical scope still collides with no reload-free fix.
+        if (result?.ok === false && String(result.message).includes("has already been declared")) {
+          return toolError("run_js", "identifier_conflict", `${result.message} That name already exists in the page's global scope, from a page script or an earlier call, and cannot be re-declared.`, {
+            next_actions: [
+              { tool: "evaluate_script", reason: "Use evaluate_script: its function body gets its own scope, so the name is free." },
+              { tool: "run_js", reason: "Re-run with a different variable name." }
+            ]
           });
         }
         return result;
