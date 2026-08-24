@@ -1475,6 +1475,52 @@ test("a frame torn down mid-injection is retried instead of surfacing", async ()
   assert.equal(attempts, 2);
 });
 
+// Measured live through the bridge: a run_js that set location.href followed in
+// the same batch by wait_for left executeScript pending forever — it neither
+// resolved nor rejected — and the call hung until the bridge's own 120s tool
+// timeout killed it. wait_for's timeout could not save it, because that
+// deadline lives inside the script that never ran.
+test("an injection that never settles is abandoned instead of hanging", async () => {
+  installDom([element("button", { innerText: "Submit order" })]);
+  stubScriptingInActiveTab();
+  let attempts = 0;
+  globalThis.chrome.scripting.executeScript = () => {
+    attempts += 1;
+    return new Promise(() => {});
+  };
+
+  // The guard fails the test instead of letting a regression hang the suite.
+  let guard = null;
+  const neverReturns = new Promise((_, reject) => {
+    guard = setTimeout(() => reject(new Error("wait_for never returned")), 60000);
+  });
+  const result = await Promise.race([
+    executePageTool("wait_for", { text: "page body", timeout: 250 }),
+    neverReturns
+  ]).finally(() => clearTimeout(guard));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "tool_execution_failed");
+  assert.match(result.message, /navigating/);
+  assert.ok(attempts > 1, `a bounded attempt still feeds the retry, saw ${attempts}`);
+});
+
+test("a hanging first injection still succeeds on the retry", async () => {
+  installDom([element("button", { innerText: "Submit order" })]);
+  stubScriptingInActiveTab();
+  const inject = globalThis.chrome.scripting.executeScript;
+  let attempts = 0;
+  globalThis.chrome.scripting.executeScript = (options) => {
+    attempts += 1;
+    if (attempts === 1) return new Promise(() => {});
+    return inject(options);
+  };
+
+  const result = await executePageTool("wait_for", { text: "page body", timeout: 250 });
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2);
+});
+
 // Chrome says "frame not found" when the real cause is a missing host
 // permission, and no number of retries will grant it.
 test("a missing host permission is not retried", async () => {
