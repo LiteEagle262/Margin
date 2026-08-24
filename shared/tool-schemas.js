@@ -8,11 +8,12 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "take_snapshot",
-      description: "Take a compact accessibility-style page snapshot with stable element uids for reliable interaction. Prefer this before clicking or filling elements. Use the latest snapshot because uids can become stale after page changes.",
+      description: "Take a compact accessibility-style page snapshot with stable element uids for reliable interaction. Prefer this before clicking or filling elements. Use the latest snapshot because uids can become stale after page changes. Zero-size elements, role=\"none\"/\"presentation\" nodes, and unnamed generic div/span wrappers are dropped by default so app chrome does not eat the element budget; filtered_count reports how many were dropped and truncated says the limit cut the list short.",
       parameters: {
         type: "object",
         properties: {
-          verbose: { type: "boolean", description: "Include more non-interactive elements. Defaults to false." },
+          scope: { type: "string", description: "CSS selector of one region to list, e.g. main or #message-list. Only that subtree is snapshotted; uids still resolve page-wide. No match returns error_code \"scope_not_found\"." },
+          verbose: { type: "boolean", description: "Include more non-interactive elements and turn the noise filter off. Defaults to false." },
           limit: { type: "number", description: "Maximum elements to return. Defaults to 80." }
         }
       }
@@ -22,7 +23,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "browser_batch",
-      description: "Run several browser actions in one tool call instead of one call per action. Use this whenever the next two or more steps are already known — navigate then wait_for then take_snapshot, or fill a form then click submit. Actions run in order and stop at the first failure unless stop_on_error is false. Batchable: navigate, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, take_snapshot, get_dom, get_active_tab, list_tabs, run_js, evaluate_script. take_screenshot, workspace, search, and MCP tools must be called on their own.",
+      description: "Run several browser actions in one tool call instead of one call per action. Use this whenever the next two or more steps are already known — navigate then wait_for then take_snapshot, or fill a form then click submit. Actions run in order and stop at the first failure unless stop_on_error is false. Batchable: navigate, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, take_snapshot, get_dom, get_active_tab, list_tabs, switch_tab, run_js, evaluate_script, set_file_input. take_screenshot, workspace, search, and MCP tools must be called on their own.",
       parameters: {
         type: "object",
         properties: {
@@ -58,7 +59,12 @@ export const BROWSER_TOOLS = [
     function: {
       name: "take_screenshot",
       description: "Capture a screenshot of the visible viewport area of the current active webpage. Use this to visually see page structures, verify layout loading, or debug automation states.",
-      parameters: { type: "object", properties: {} }
+      parameters: {
+        type: "object",
+        properties: {
+          output_path: { type: "string", description: "Absolute or relative file path to save the PNG to, written by the Margin MCP server on the client machine; over the MCP bridge only. The parent directory must already exist. When set, the image is not returned inline." }
+        }
+      }
     }
   },
   {
@@ -74,6 +80,7 @@ export const BROWSER_TOOLS = [
           find_text: { type: "string", description: "Target by visible label text instead of uid or selector. Case-insensitive and whitespace-normalized; an exact match wins, otherwise substring. Prefer this on single-page apps, where uids go stale on every re-render and ids are randomized per load. Several matches return error_code \"ambiguous_target\" with candidate uids." },
           role: { type: "string", description: "Narrow find_text to one role, e.g. button, link, textbox, checkbox." },
           dblClick: { type: "boolean", description: "Double click the target. Defaults to false." },
+          rightClick: { type: "boolean", description: "Right click the target, opening the page's own context menu — Chrome's native menu is never reachable, so this only helps where the site renders its own. Cannot be combined with dblClick. Defaults to false." },
           include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
         }
       }
@@ -83,7 +90,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "fill_element",
-      description: "Set the value of an input, textarea, select, checkbox, or radio element. Prefer uid from take_snapshot; selector and find_text are fallbacks. Checkbox and radio results carry checked_before/checked_after; framework-controlled toggles apply state asynchronously, so re-read the element to confirm.",
+      description: "Set the value of an input, textarea, select, checkbox, or radio element. Prefer uid from take_snapshot; selector and find_text are fallbacks. Checkbox and radio results carry checked_before/checked_after; framework-controlled toggles apply state asynchronously, so re-read the element to confirm. Newlines in a contenteditable body are preserved as real line breaks.",
       parameters: {
         type: "object",
         properties: {
@@ -130,12 +137,17 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "scroll_page",
-      description: "Scroll the active page view up or down.",
+      description: "Scroll the active page view up or down. With a uid, selector, or find_text it scrolls the nearest scrollable ancestor of that element instead — the only way to reach an inner pane such as an inbox list. Reports scroll_top_before/scroll_top_after and moved; moved: false is not an error, it means the scroller was already clamped, which is what a virtualized list does at its end.",
       parameters: {
         type: "object",
         properties: {
           direction: { type: "string", enum: ["up", "down"], description: "Scroll direction." },
-          amount: { type: "number", description: "Pixels to scroll. Defaults to 500." }
+          amount: { type: "number", description: "Pixels to scroll. Defaults to 500." },
+          uid: { type: "string", description: "Element uid from the latest take_snapshot result. Scrolls the nearest scrollable ancestor of that element." },
+          selector: { type: "string", description: "Fallback CSS selector of an element inside the scrollable region." },
+          find_text: { type: "string", description: "Target the region by the visible label text of an element inside it. Case-insensitive and whitespace-normalized. Several matches return error_code \"ambiguous_target\" with candidate uids." },
+          role: { type: "string", description: "Narrow find_text to one role, e.g. listitem, link." },
+          include_snapshot: { type: "boolean", description: "Include a fresh snapshot in the result. Defaults to false." }
         },
         required: ["direction"]
       }
@@ -145,7 +157,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "type_text",
-      description: "Type text into a designated input element or the currently focused field. Prefer fill_element/fill_form for normal forms.",
+      description: "Type text into a designated input element or the currently focused field. Prefer fill_element/fill_form for normal forms. Newlines in a contenteditable body are preserved as real line breaks.",
       parameters: {
         type: "object",
         properties: {
@@ -216,7 +228,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "run_js",
-      description: "Execute arbitrary Javascript expression/source in the webpage context. Prefer evaluate_script for normal scripts because it avoids top-level return syntax errors.",
+      description: "Execute arbitrary Javascript expression/source in the webpage context. Prefer evaluate_script for normal scripts because it avoids top-level return syntax errors. Calls share the page's global scope but run with REPL semantics: let/const may be re-declared across calls and top-level await works, so wrapping the snippet in an IIFE is unnecessary. A name the page itself declared, or one left behind by a call from an earlier session, still collides — use evaluate_script, whose function body gets its own scope, or pick a different name.",
       parameters: {
         type: "object",
         properties: {
@@ -230,7 +242,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "get_active_tab",
-      description: "Get metadata about the currently active browser tab (id, url, title).",
+      description: "Get metadata about the tab the browser tools act on (id, url, title, windowId, latched). latched is true when the user has pinned a tab to Margin; every browser tool then targets that tab rather than whichever tab is in the foreground.",
       parameters: { type: "object", properties: {} }
     }
   },
@@ -238,19 +250,35 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "list_tabs",
-      description: "List all tabs in the current browser window.",
+      description: "List the tabs of every browser window, not just the current one. Returns count, current_window_id, and per tab id, url, title, active, windowId, plus latched: true on the tab the browser tools are pinned to. Feed an id to switch_tab to bring that tab to the foreground without loading anything.",
       parameters: { type: "object", properties: {} }
     }
   },
   {
     type: "function",
     function: {
-      name: "navigate",
-      description: "Navigate the active tab to a URL.",
+      name: "switch_tab",
+      description: "Bring an already-open tab to the foreground without reloading it or changing what it shows, so the page keeps the state the user left it in. Takes a tab_id from list_tabs and focuses that tab's window too, so a tab in a background window really comes to the front. Use navigate instead only when the tab should also load a URL.",
       parameters: {
         type: "object",
         properties: {
-          url: { type: "string", description: "Destination URL." }
+          tab_id: { type: "number", description: "Id of the tab to focus, from list_tabs." }
+        },
+        required: ["tab_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "navigate",
+      description: "Navigate to a URL. On its own this reuses the current tab, taking it away from whatever the user had open there; pass new_tab to leave their tab alone, or tab_id to drive a tab from list_tabs. Use switch_tab instead to focus an existing tab without loading anything into it. Every other browser tool follows the latched tab, so navigating a different tab returns a note saying so.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Destination URL." },
+          new_tab: { type: "boolean", description: "Open the URL in a new active tab instead of reusing the current one. Defaults to false." },
+          tab_id: { type: "number", description: "Navigate this specific tab from list_tabs, make it active, and bring its window to the front, so it is the tab the other browser tools then act on. Cannot be combined with new_tab." }
         },
         required: ["url"]
       }
@@ -380,7 +408,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "set_file_input",
-      description: "Set the files on a page's file input without opening the native file picker, which cannot be driven otherwise. Target the <input type=\"file\"> element itself, not the styled button in front of it — a file input is often hidden, so find it with a CSS selector such as input[type=file] rather than expecting it in a snapshot. Chrome fires the page's input and change events itself.",
+      description: "Set the files on a page's file input without opening the native file picker, which cannot be driven otherwise. Target the <input type=\"file\"> element itself, not the styled button in front of it — a file input is often hidden, so find it with a CSS selector such as input[type=file] rather than expecting it in a snapshot. Chrome fires the page's input and change events itself. When the selector matches several inputs the call returns error_code \"ambiguous_target\" instead of silently taking the first: each candidate carries its uid plus accept and multiple, so pick the one whose accept takes the file type.",
       parameters: {
         type: "object",
         properties: {

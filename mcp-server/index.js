@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { WebSocket, WebSocketServer } from "ws";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -676,6 +677,46 @@ export function startBridgeServer(options = {}) {
   return wss;
 }
 
+// chrome.downloads can only write inside the Downloads folder, but this process
+// runs on the user's machine and can put the PNG where the caller asked. Text
+// only on success is the point: a screenshot saved to disk never has to cross
+// the model's context.
+export function saveScreenshotContent(content, outputPath) {
+  const image = (Array.isArray(content) ? content : []).find(
+    (entry) => entry && entry.type === "image" && typeof entry.data === "string"
+  );
+  if (!image) {
+    return {
+      content: [{ type: "text", text: "take_screenshot returned no image data, so nothing was written." }],
+      isError: true
+    };
+  }
+
+  const absolutePath = path.resolve(outputPath);
+  const directory = path.dirname(absolutePath);
+  if (!fs.existsSync(directory)) {
+    return {
+      content: [{ type: "text", text: `Directory does not exist: ${directory}` }],
+      isError: true
+    };
+  }
+
+  const bytes = Buffer.from(image.data, "base64");
+  try {
+    fs.writeFileSync(absolutePath, bytes);
+  } catch (err) {
+    return {
+      content: [{ type: "text", text: `Failed to write ${absolutePath}: ${err.message || String(err)}` }],
+      isError: true
+    };
+  }
+
+  return {
+    content: [{ type: "text", text: `Screenshot saved to ${absolutePath} (${bytes.length} bytes)` }],
+    isError: false
+  };
+}
+
 export async function main() {
   const requiredAuthToken = requireBridgeAuthToken();
   startBridgeServer({ bridgeAuthToken: requiredAuthToken, exitOnError: true });
@@ -709,10 +750,22 @@ export async function main() {
       };
     }
 
+    const callArguments = { ...(args || {}) };
+    // The extension has no way to write an arbitrary OS path, so output_path is
+    // this process's own argument and must never be forwarded.
+    const outputPath = name === "take_screenshot" && typeof callArguments.output_path === "string"
+      ? callArguments.output_path.trim()
+      : "";
+    if (name === "take_screenshot") delete callArguments.output_path;
+
     try {
-      const result = await callExtensionTool(name, args || {});
+      const result = await callExtensionTool(name, callArguments);
+      const content = result.content || [{ type: "text", text: "Tool completed with no content." }];
+      if (outputPath && result.isError !== true) {
+        return saveScreenshotContent(content, outputPath);
+      }
       return {
-        content: result.content || [{ type: "text", text: "Tool completed with no content." }],
+        content,
         isError: result.isError === true
       };
     } catch (err) {

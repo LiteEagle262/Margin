@@ -503,8 +503,11 @@ function sendFeatureFlagsToBridge() {
 // side panel and there is no redundant background -> panel -> background round
 // trip. browser_batch runs the shared batch core here with a background
 // adapter; the panel runs the same core for the in-chat agent.
+// Default deny, matching the direct tool/call path above: a tool with no Tool
+// Access entry must not become reachable by wrapping it in a batch when a direct
+// call would refuse it.
 function isBatchActionEnabled(tool) {
-  return !BUILT_IN_TOOL_NAMES.has(tool) || isStoredToolEnabled(tool);
+  return isStoredToolEnabled(tool);
 }
 
 // The bridge has no agent run, so the in-chat tool budget and loop guards do

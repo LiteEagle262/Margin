@@ -9,7 +9,7 @@ const TOOL_ACCESS_GROUPS = [
     tools: [
       "take_snapshot", "click_element", "fill_element", "fill_form", "type_text",
       "hover_element", "press_key", "scroll_page", "wait_for", "navigate",
-      "get_active_tab", "list_tabs", "take_screenshot", "get_dom", "run_js", "evaluate_script",
+      "get_active_tab", "list_tabs", "switch_tab", "take_screenshot", "get_dom", "run_js", "evaluate_script",
       "browser_batch", "list_downloads", "set_file_input"
     ]
   },
@@ -88,6 +88,7 @@ const TOOL_LABELS = {
   navigate: "Navigate",
   get_active_tab: "Active tab",
   list_tabs: "List tabs",
+  switch_tab: "Switch tab",
   take_screenshot: "Screenshot",
   get_dom: "Raw DOM",
   run_js: "Raw JS",

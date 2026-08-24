@@ -14,7 +14,7 @@ export const MAX_BATCH_ACTIONS = 10;
 export const BATCHABLE_TOOL_NAMES = new Set([
   "navigate", "click_element", "fill_element", "fill_form", "fill_secret", "type_text",
   "hover_element", "press_key", "scroll_page", "wait_for", "take_snapshot",
-  "get_dom", "get_active_tab", "list_tabs", "run_js", "evaluate_script"
+  "get_dom", "get_active_tab", "list_tabs", "switch_tab", "run_js", "evaluate_script", "set_file_input"
 ]);
 
 // A navigation or a click can still be committing when the next action runs.
