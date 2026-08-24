@@ -119,6 +119,39 @@ async function navigateTab(args = {}) {
   return toolOk(tool, `Navigated tab ${tabId} to ${destination.href}`, data);
 }
 
+async function switchToTab(args = {}) {
+  const tool = "switch_tab";
+  if (args.tab_id === undefined || args.tab_id === null || !Number.isInteger(Number(args.tab_id))) {
+    return toolError(tool, "invalid_arguments", "switch_tab requires tab_id, a tab id from list_tabs.", { recoverable: false });
+  }
+  const tabId = Number(args.tab_id);
+
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (err) {
+    return toolError(tool, "tab_not_found", `No tab with id ${tabId}: ${err.message}`, {
+      next_actions: [{ tool: "list_tabs", reason: "List every open tab and pick a current tab id." }]
+    });
+  }
+
+  const latched = await getLatchedTabRecord();
+  await chrome.tabs.update(tabId, { active: true });
+  // tabs.update only selects a tab inside its own window, so without the window
+  // focus a tab in a background window is "active" behind the foreground one.
+  if (typeof tab.windowId === "number") {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
+
+  const data = { tab_id: tabId, url: tab.url || "", title: tab.title || "", windowId: tab.windowId };
+  // Every other browser tool follows the latch, so switching anywhere else
+  // leaves the caller driving a tab it never brought forward.
+  if (latched && latched.tabId !== tabId) {
+    data.note = `Other browser tools still act on the latched tab ${latched.tabId}.`;
+  }
+  return toolOk(tool, `Switched to tab ${tabId}`, data);
+}
+
 // Navigating tears the old frame down mid-injection, so a wait started right
 // after a navigate dies with a frame error that is gone by the next attempt.
 // Chrome also says "frame not found" when the real cause is a missing host
@@ -1425,6 +1458,10 @@ export async function executePageTool(name, args = {}) {
       case "navigate": {
         if (!args.url) return toolError(name, "missing_url", "navigate requires url.", { recoverable: false });
         return await navigateTab(args);
+      }
+
+      case "switch_tab": {
+        return await switchToTab(args);
       }
 
       case "take_snapshot": {

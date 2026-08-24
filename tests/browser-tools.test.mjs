@@ -1177,6 +1177,15 @@ function stubTabsForNavigate() {
   globalThis.chrome.tabs.query = async () => [{ id: 7, url: "https://example.com/form", title: "Test page", windowId: 1 }];
   globalThis.chrome.tabs.create = async (props) => { calls.push({ method: "create", props }); return { id: 99, ...props }; };
   globalThis.chrome.tabs.update = async (tabId, props) => { calls.push({ method: "update", tabId, props }); return { id: tabId, ...props }; };
+  // switch_tab resolves the tab before activating it and then focuses its
+  // window, so the same recorder covers chrome.windows too.
+  globalThis.chrome.tabs.get = async (tabId) => {
+    if (tabId !== 12) throw new Error(`No tab with id ${tabId}.`);
+    return { id: 12, url: "https://docs.example.com/", title: "Docs", windowId: 2 };
+  };
+  globalThis.chrome.windows = {
+    update: async (windowId, props) => { calls.push({ method: "windows.update", windowId, props }); }
+  };
   return calls;
 }
 
@@ -1254,6 +1263,66 @@ test("list_tabs enumerates every window and marks the latched tab", async () => 
   } finally {
     restore();
   }
+});
+
+// tabs.update only selects a tab inside its own window, so a tab in a
+// background window would be "active" behind the foreground window.
+test("switch_tab activates the tab and focuses its window", async () => {
+  const calls = stubTabsForNavigate();
+
+  const result = await executePageTool("switch_tab", { tab_id: 12 });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.url, "https://docs.example.com/");
+  assert.equal(result.data.title, "Docs");
+  assert.deepEqual(calls, [
+    { method: "update", tabId: 12, props: { active: true } },
+    { method: "windows.update", windowId: 2, props: { focused: true } }
+  ]);
+});
+
+test("switch_tab on an unknown tab id points back at list_tabs", async () => {
+  const calls = stubTabsForNavigate();
+
+  const result = await executePageTool("switch_tab", { tab_id: 4242 });
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "tab_not_found");
+  assert.equal(result.recoverable, true);
+  assert.deepEqual(result.next_actions.map((action) => action.tool), ["list_tabs"]);
+  assert.equal(calls.length, 0);
+});
+
+test("switch_tab without a tab_id is rejected instead of focusing something", async () => {
+  const calls = stubTabsForNavigate();
+
+  const result = await executePageTool("switch_tab", {});
+  assert.equal(result.ok, false);
+  assert.equal(result.error_code, "invalid_arguments");
+  assert.equal(result.recoverable, false);
+  assert.equal(calls.length, 0);
+});
+
+// Otherwise the caller brings one tab forward and silently drives another.
+test("switching away from the latched tab says the other tools stay latched", async () => {
+  stubTabsForNavigate();
+  const restore = stubLatchedTab(7);
+  try {
+    const result = await executePageTool("switch_tab", { tab_id: 12 });
+    assert.equal(result.ok, true);
+    assert.match(result.data.note, /latched tab 7/);
+  } finally {
+    restore();
+  }
+});
+
+test("switch_tab runs as a batch action", async () => {
+  const calls = recordBackgroundCalls();
+
+  const parsed = JSON.parse(await executeBatchTool({
+    actions: [{ tool: "switch_tab", arguments: { tab_id: 12 } }, { tool: "take_snapshot" }]
+  }));
+
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(calls.map((call) => call.name), ["switch_tab", "take_snapshot"]);
 });
 
 // A contenteditable renders a textContent write with its newlines collapsed, so

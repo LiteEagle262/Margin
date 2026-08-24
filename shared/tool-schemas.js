@@ -23,7 +23,7 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "browser_batch",
-      description: "Run several browser actions in one tool call instead of one call per action. Use this whenever the next two or more steps are already known — navigate then wait_for then take_snapshot, or fill a form then click submit. Actions run in order and stop at the first failure unless stop_on_error is false. Batchable: navigate, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, take_snapshot, get_dom, get_active_tab, list_tabs, run_js, evaluate_script, set_file_input. take_screenshot, workspace, search, and MCP tools must be called on their own.",
+      description: "Run several browser actions in one tool call instead of one call per action. Use this whenever the next two or more steps are already known — navigate then wait_for then take_snapshot, or fill a form then click submit. Actions run in order and stop at the first failure unless stop_on_error is false. Batchable: navigate, click_element, fill_element, fill_form, type_text, hover_element, press_key, scroll_page, wait_for, take_snapshot, get_dom, get_active_tab, list_tabs, switch_tab, run_js, evaluate_script, set_file_input. take_screenshot, workspace, search, and MCP tools must be called on their own.",
       parameters: {
         type: "object",
         properties: {
@@ -250,15 +250,29 @@ export const BROWSER_TOOLS = [
     type: "function",
     function: {
       name: "list_tabs",
-      description: "List the tabs of every browser window, not just the current one. Returns count, current_window_id, and per tab id, url, title, active, windowId, plus latched: true on the tab the browser tools are pinned to.",
+      description: "List the tabs of every browser window, not just the current one. Returns count, current_window_id, and per tab id, url, title, active, windowId, plus latched: true on the tab the browser tools are pinned to. Feed an id to switch_tab to bring that tab to the foreground without loading anything.",
       parameters: { type: "object", properties: {} }
     }
   },
   {
     type: "function",
     function: {
+      name: "switch_tab",
+      description: "Bring an already-open tab to the foreground without reloading it or changing what it shows, so the page keeps the state the user left it in. Takes a tab_id from list_tabs and focuses that tab's window too, so a tab in a background window really comes to the front. Use navigate instead only when the tab should also load a URL.",
+      parameters: {
+        type: "object",
+        properties: {
+          tab_id: { type: "number", description: "Id of the tab to focus, from list_tabs." }
+        },
+        required: ["tab_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "navigate",
-      description: "Navigate to a URL. On its own this reuses the current tab, taking it away from whatever the user had open there; pass new_tab to leave their tab alone, or tab_id to drive a tab from list_tabs. Every other browser tool follows the latched tab, so navigating a different tab returns a note saying so.",
+      description: "Navigate to a URL. On its own this reuses the current tab, taking it away from whatever the user had open there; pass new_tab to leave their tab alone, or tab_id to drive a tab from list_tabs. Use switch_tab instead to focus an existing tab without loading anything into it. Every other browser tool follows the latched tab, so navigating a different tab returns a note saying so.",
       parameters: {
         type: "object",
         properties: {
