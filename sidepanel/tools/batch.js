@@ -3,7 +3,7 @@
 // service worker instead, so no batch call depends on an open side panel.
 
 import { executeTool, guardToolCallBeforeExecution, evaluateToolLoopGuard } from "./execute.js";
-import { BUILT_IN_TOOL_NAMES, isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
+import { isBuiltInToolEnabled } from "../settings/sections/tool-access.js";
 import { runBatch } from "../../shared/batch-core.js";
 
 // Re-exported so existing panel importers keep their current source.
@@ -15,10 +15,11 @@ export {
   SETTLE_MS
 } from "../../shared/batch-core.js";
 
-// Only tools that appear in the access settings can be disabled there; anything
-// outside that set is allowed, mirroring executeTool.
+// Default deny, matching the bridge's direct tool/call path: a tool with no Tool
+// Access entry must not become reachable by wrapping it in a batch when a direct
+// call would refuse it.
 function isToolEnabled(tool) {
-  return !BUILT_IN_TOOL_NAMES.has(tool) || isBuiltInToolEnabled(tool);
+  return isBuiltInToolEnabled(tool);
 }
 
 export async function executeBatchTool(args = {}, surface = "panel") {

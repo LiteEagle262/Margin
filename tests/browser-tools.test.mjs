@@ -12,7 +12,8 @@ globalThis.chrome = {
 
 const { pageAgentScript, executePageTool } = await import("../shared/browser-tools.js");
 const { executeTool } = await import("../sidepanel/tools/execute.js");
-const { executeBatchTool, MAX_BATCH_ACTIONS } = await import("../sidepanel/tools/batch.js");
+const { executeBatchTool, MAX_BATCH_ACTIONS, BATCHABLE_TOOL_NAMES } = await import("../sidepanel/tools/batch.js");
+const { BUILT_IN_TOOL_NAMES } = await import("../sidepanel/settings/sections/tool-access.js");
 const { settings, beginAgentRunState, endAgentRunState } = await import("../sidepanel/state/store.js");
 
 // Records what the batch actually dispatched to the background worker.
@@ -681,6 +682,32 @@ test("a disabled tool fails only its own action and keeps earlier results", asyn
   assert.equal(parsed.results[1].status, "error");
   assert.match(parsed.results[1].error, /disabled in Margin Tool Access/);
   assert.equal(parsed.results[2].status, "skipped");
+});
+
+// The batch gate is default deny, so a batchable tool that is missing from Tool
+// Access would be rejected in every batch instead of running. Registering it is
+// the fix; this test is what catches the omission.
+test("every batchable tool has a Tool Access entry", () => {
+  const missing = [...BATCHABLE_TOOL_NAMES].filter((tool) => !BUILT_IN_TOOL_NAMES.has(tool));
+  assert.deepEqual(missing, []);
+});
+
+// A name with no Tool Access entry used to short-circuit to allowed here, so a
+// tool the bridge's direct path refuses could still run inside a batch.
+test("a tool with no Tool Access entry is rejected instead of run", async () => {
+  const unregistered = "unregistered_test_tool";
+  BATCHABLE_TOOL_NAMES.add(unregistered);
+  try {
+    const calls = recordBackgroundCalls();
+    const parsed = JSON.parse(await executeBatchTool({ actions: [{ tool: unregistered }] }));
+
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.results[0].status, "error");
+    assert.match(parsed.results[0].error, /disabled in Margin Tool Access/);
+    assert.equal(calls.length, 0);
+  } finally {
+    BATCHABLE_TOOL_NAMES.delete(unregistered);
+  }
 });
 
 test("nested batches, screenshots, and non-batchable tools are rejected per action", async () => {
