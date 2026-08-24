@@ -528,10 +528,31 @@ export function pageAgentScript(input) {
     return Array.from(el.labels || []).find((label) => isVisible(label)) || null;
   }
 
-  // No positional index: hidden nodes are filtered out of snapshots but not out
-  // of the lookup list, so any index would disagree between the two.
-  function uidFor(el) {
+  function baseUid(el) {
     return `sf-${el.tagName.toLowerCase()}-${hash(`${roleFor(el)}|${accessibleName(el).slice(0, 160)}|${cssPath(el)}`)}`;
+  }
+
+  // Two Outlook rows' "Mark as unread" buttons both hashed to sf-button-s5l5du:
+  // same role, same name, and a cssPath capped at 5 ancestors that never reaches
+  // the row that tells them apart, so a caller acting on that uid silently hit
+  // whichever came first. The disambiguating index is safe because it is taken
+  // over `nodes` on both the snapshot and the lookup path, so the two always
+  // agree: it is the snapshot's output list that gets filtered, never this one.
+  let uidByNode = null;
+  function uidFor(el) {
+    if (!uidByNode) {
+      uidByNode = new Map();
+      const counts = new Map();
+      for (const node of nodes) {
+        const base = baseUid(node);
+        const seen = (counts.get(base) || 0) + 1;
+        counts.set(base, seen);
+        uidByNode.set(node, seen === 1 ? base : `${base}-${seen}`);
+      }
+    }
+    // A verbose snapshot also lists h1/p/li nodes that are not in `nodes`; those
+    // are not uid-resolvable either way.
+    return uidByNode.get(el) || baseUid(el);
   }
 
   function summarize(el) {
@@ -557,6 +578,29 @@ export function pageAgentScript(input) {
     if ((rect.width < 2 || rect.height < 2) && !toggleLabel) return true;
     const tag = el.tagName.toLowerCase();
     if ((tag === "div" || tag === "span") && roleFor(el) === "generic" && !accessibleName(el)) return true;
+    return false;
+  }
+
+  // One Outlook message row cost four entries: the role=option row, a role=group
+  // wrapper and a role=generic wrapper all drawing the same box to within 1px,
+  // plus a 4px button. Only generic/group wrappers are droppable — a link,
+  // button, input or option nested inside a kept element is the thing the caller
+  // has to act on, and the option row comes first so it is what survives.
+  function isRedundantWrapper(el, rect, keptRects) {
+    const role = roleFor(el);
+    if (role !== "generic" && role !== "group") return false;
+    let node = el.parentElement;
+    for (let level = 0; node && level < 6; level += 1) {
+      const kept = keptRects.get(node);
+      if (kept
+        && Math.abs(kept.x - rect.x) <= 2
+        && Math.abs(kept.y - rect.y) <= 2
+        && Math.abs(kept.width - rect.width) <= 2
+        && Math.abs(kept.height - rect.height) <= 2) {
+        return true;
+      }
+      node = node.parentElement;
+    }
     return false;
   }
 
@@ -627,6 +671,7 @@ export function pageAgentScript(input) {
       : scoped;
     const seen = new Set();
     const elements = [];
+    const keptRects = new Map();
     let filteredCount = 0;
     let truncated = false;
     for (const el of candidates) {
@@ -637,6 +682,10 @@ export function pageAgentScript(input) {
       if (!includeVerbose && !visible && !toggleLabel) continue;
       const rect = el.getBoundingClientRect();
       if (!includeVerbose && isSnapshotNoise(el, rect, toggleLabel)) {
+        filteredCount += 1;
+        continue;
+      }
+      if (!includeVerbose && isRedundantWrapper(el, rect, keptRects)) {
         filteredCount += 1;
         continue;
       }
@@ -662,6 +711,7 @@ export function pageAgentScript(input) {
           height: Math.round(rect.height)
         }
       });
+      keptRects.set(el, rect);
     }
 
     return {

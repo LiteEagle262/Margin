@@ -149,6 +149,43 @@ test("a uid survives the field it points at being filled", () => {
   assert.equal(snapshot([field]).elements[0].uid, before);
 });
 
+// Two Outlook rows' "Mark as unread" buttons both hashed to sf-button-s5l5du,
+// so acting on that uid silently hit the wrong row's button with no error.
+test("two elements with the same role, name and path get different uids", () => {
+  // cssPath stops after 5 ancestors, so the row that tells these two apart is
+  // out of its reach and both buttons hash identically.
+  function buriedButton() {
+    const button = element("button", { attrs: { "aria-label": "Mark as unread" } });
+    let child = button;
+    for (let depth = 0; depth < 4; depth += 1) {
+      const wrapper = element("div");
+      wrapper.children = [child];
+      child.parentElement = wrapper;
+      child = wrapper;
+    }
+    const row = element("div", { attrs: { role: "option" } });
+    row.children = [child];
+    child.parentElement = row;
+    return button;
+  }
+
+  const first = buriedButton();
+  const second = buriedButton();
+  const wrappers = [first.parentElement, second.parentElement];
+  installDom([first, second]);
+  first.parentElement = wrappers[0];
+  second.parentElement = wrappers[1];
+
+  const uids = pageAgentScript({ op: "snapshot", limit: 80, verbose: false }).elements.map((item) => item.uid);
+  assert.match(uids[0], /^sf-button-[a-z0-9]+$/, "the first occurrence keeps the uid it always had");
+  assert.equal(uids[1], `${uids[0]}-2`);
+
+  assert.equal(pageAgentScript({ op: "interact", action: "click", uid: uids[0] }).ok, true);
+  assert.equal(pageAgentScript({ op: "interact", action: "click", uid: uids[1] }).ok, true);
+  assert.equal(first.clicks, 1);
+  assert.equal(second.clicks, 1);
+});
+
 test("a value the page refuses to keep is reported as a failure", () => {
   const rejecting = element("input", { placeholder: "Amount" });
   Object.defineProperty(rejecting, "value", {
@@ -1018,6 +1055,29 @@ test("an unnamed 1x1 wrapper is filtered out of a snapshot", () => {
   const result = snapshot([wrapper, reply]);
   assert.deepEqual(result.elements.map((item) => item.name), ["Reply"]);
   assert.equal(result.filtered_count, 1);
+});
+
+// One Outlook message row cost four snapshot entries — the role=option row and
+// two wrappers drawing the same box, plus a button — so 80 elements held only
+// about 24 emails.
+test("same-box wrappers inside a message row collapse to the row itself", () => {
+  const row = element("div", { innerText: "Quarterly report", attrs: { role: "option" } });
+  row.getBoundingClientRect = () => ({ x: 0, y: 100, width: 400, height: 80 });
+  const group = element("div", { innerText: "Quarterly report", attrs: { role: "group" } });
+  group.getBoundingClientRect = () => ({ x: 0, y: 100, width: 400, height: 79 });
+  const generic = element("div", { innerText: "Quarterly report", attrs: { role: "generic" } });
+  generic.getBoundingClientRect = () => ({ x: 1, y: 101, width: 399, height: 78 });
+  const markUnread = element("button", { attrs: { "aria-label": "Mark as unread" } });
+  markUnread.getBoundingClientRect = () => ({ x: 370, y: 110, width: 20, height: 20 });
+
+  installDom([row, group, generic, markUnread]);
+  group.parentElement = row;
+  generic.parentElement = group;
+  markUnread.parentElement = generic;
+
+  const result = pageAgentScript({ op: "snapshot", limit: 80, verbose: false });
+  assert.deepEqual(result.elements.map((item) => item.role), ["option", "button"], "the row survives, and so does the control inside it");
+  assert.equal(result.filtered_count, 2, "both wrappers are counted, not silently dropped");
 });
 
 test("a 1x0 toggle behind a visible label survives the noise filter", () => {
