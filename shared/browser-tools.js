@@ -90,12 +90,22 @@ async function navigateTab(args = {}) {
     tabId = created ? created.id : null;
   } else if (args.tab_id !== undefined && args.tab_id !== null) {
     tabId = Number(args.tab_id);
+    let tab;
     try {
+      tab = await chrome.tabs.get(tabId);
       await chrome.tabs.update(tabId, { url: destination.href, active: true });
     } catch (err) {
       return toolError(tool, "tab_not_found", `No tab with id ${tabId}: ${err.message}`, {
         next_actions: [{ tool: "list_tabs", reason: "List every open tab and pick a current tab id." }]
       });
+    }
+    // Activating a tab selects it inside its own window without focusing that
+    // window, which leaves the tab the other tools drive genuinely ambiguous:
+    // run twice from an identical starting state, the next tool landed once on
+    // the navigated tab in the background window and once on the foreground
+    // window's tab. Focusing the window settles it.
+    if (typeof tab.windowId === "number") {
+      await chrome.windows.update(tab.windowId, { focused: true });
     }
   } else {
     tabId = await getActiveTabId();
@@ -108,13 +118,6 @@ async function navigateTab(args = {}) {
   // leaves the caller driving a tab it never navigated.
   if (latched && latched.tabId !== tabId) {
     data.note = `Other browser tools still act on the latched tab ${latched.tabId}.`;
-  } else if (!latched) {
-    // tabs.update activates a tab inside its own window without focusing that
-    // window, so a tab_id in a background window is navigated and never driven.
-    const activeId = await getActiveTabId();
-    if (activeId !== tabId) {
-      data.note = `Other browser tools act on the focused window's active tab ${activeId}, not tab ${tabId}.`;
-    }
   }
   return toolOk(tool, `Navigated tab ${tabId} to ${destination.href}`, data);
 }

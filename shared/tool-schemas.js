@@ -278,7 +278,7 @@ export const BROWSER_TOOLS = [
         properties: {
           url: { type: "string", description: "Destination URL." },
           new_tab: { type: "boolean", description: "Open the URL in a new active tab instead of reusing the current one. Defaults to false." },
-          tab_id: { type: "number", description: "Navigate this specific tab from list_tabs and make it active. Cannot be combined with new_tab." }
+          tab_id: { type: "number", description: "Navigate this specific tab from list_tabs, make it active, and bring its window to the front, so it is the tab the other browser tools then act on. Cannot be combined with new_tab." }
         },
         required: ["url"]
       }

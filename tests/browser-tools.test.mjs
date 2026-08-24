@@ -1238,13 +1238,19 @@ test("navigate with new_tab opens a tab instead of reusing the current one", asy
   assert.deepEqual(calls, [{ method: "create", props: { url: "https://mail.example.com/", active: true } }]);
 });
 
-test("navigate with tab_id drives that tab and activates it", async () => {
+// Activating a tab without focusing its window leaves the tab the other tools
+// drive racy, so the navigated tab has to become the foreground one outright.
+test("navigate with tab_id drives that tab, activates it and focuses its window", async () => {
   const calls = stubTabsForNavigate();
 
   const result = await executePageTool("navigate", { url: "https://mail.example.com/", tab_id: 12 });
   assert.equal(result.ok, true);
   assert.equal(result.data.tab_id, 12);
-  assert.deepEqual(calls, [{ method: "update", tabId: 12, props: { url: "https://mail.example.com/", active: true } }]);
+  assert.equal(result.data.note, undefined, "the navigated tab is the tab other tools act on");
+  assert.deepEqual(calls, [
+    { method: "update", tabId: 12, props: { url: "https://mail.example.com/", active: true } },
+    { method: "windows.update", windowId: 2, props: { focused: true } }
+  ]);
 });
 
 test("navigate with both new_tab and tab_id is rejected instead of picking one", async () => {
