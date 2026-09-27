@@ -10,7 +10,7 @@ globalThis.chrome = {
   storage: { session: { get: async () => ({}) }, local: { get: async () => ({}) } }
 };
 
-const { pageAgentScript, executePageTool } = await import("../shared/browser-tools.js");
+const { pageAgentScript, executePageTool, fitResultToBridge } = await import("../shared/browser-tools.js");
 const { executeTool } = await import("../sidepanel/tools/execute.js");
 const { executeBatchTool, MAX_BATCH_ACTIONS, BATCHABLE_TOOL_NAMES } = await import("../sidepanel/tools/batch.js");
 const { BUILT_IN_TOOL_NAMES } = await import("../sidepanel/settings/sections/tool-access.js");
@@ -1584,4 +1584,33 @@ test("long action output is truncated so a batch cannot flood the context", asyn
     assert.ok(entry.result.length < 5000, "each action result stays bounded");
     assert.match(entry.result, /truncated \(50000 chars total\)/);
   }
+});
+
+test("a tool result that fits the bridge cap is sent as-is", () => {
+  const message = { type: "tool/result", id: "call-1", result: { content: [{ type: "text", text: "ok" }], isError: false } };
+
+  assert.equal(fitResultToBridge(message, 1024 * 1024, "get_dom").json, JSON.stringify(message));
+});
+
+test("an oversized tool result becomes an error rather than a severed socket", () => {
+  const message = {
+    type: "tool/result",
+    id: "call-2",
+    result: { content: [{ type: "image", data: "A".repeat(3 * 1024 * 1024), mimeType: "image/png" }], isError: false }
+  };
+  const replacement = JSON.parse(fitResultToBridge(message, 2 * 1024 * 1024, "take_screenshot").json);
+
+  assert.equal(replacement.type, "tool/result");
+  assert.equal(replacement.id, "call-2");
+  assert.equal(replacement.result.isError, true);
+  assert.match(replacement.result.content[0].text, /take_screenshot returned 3\.0 MB, over the bridge's 2\.0 MB message limit\./);
+});
+
+test("only the legacy 1 MiB cap is reported as fixable by updating the server", () => {
+  const message = { type: "tool/result", id: "call-3", result: { content: [{ type: "text", text: "x".repeat(2 * 1024 * 1024) }], isError: false } };
+  const legacy = JSON.parse(fitResultToBridge(message, 1024 * 1024, "get_dom").json);
+  const current = JSON.parse(fitResultToBridge(message, 1024 * 1024 + 1, "get_dom").json);
+
+  assert.match(legacy.result.content[0].text, /margin-mcp-server@latest/);
+  assert.doesNotMatch(current.result.content[0].text, /margin-mcp-server@latest/);
 });

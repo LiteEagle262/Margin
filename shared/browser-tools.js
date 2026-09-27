@@ -1801,3 +1801,29 @@ export function formatToolResultForMcp(result) {
     isError: result?.ok === false
   };
 }
+
+// The bridge server drops the socket on a frame over its cap, which surfaces
+// to the caller as a disconnect instead of a tool error.
+export function fitResultToBridge(message, maxBytes, toolName) {
+  const json = JSON.stringify(message);
+  const byteLength = new TextEncoder().encode(json).byteLength;
+  if (byteLength <= maxBytes) return { json };
+
+  const megabytes = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
+  const hint = maxBytes === 1024 * 1024
+    ? " Updating margin-mcp-server (npx -y margin-mcp-server@latest, then restart the MCP client) raises it to 64 MB."
+    : "";
+  return {
+    json: JSON.stringify({
+      type: "tool/result",
+      id: message.id,
+      result: {
+        content: [{
+          type: "text",
+          text: `${toolName} returned ${megabytes(byteLength)} MB, over the bridge's ${megabytes(maxBytes)} MB message limit.${hint}`
+        }],
+        isError: true
+      }
+    })
+  };
+}

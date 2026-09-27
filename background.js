@@ -1,4 +1,4 @@
-import { getActiveTabId, executePageTool, formatToolResultForMcp } from "./shared/browser-tools.js";
+import { getActiveTabId, executePageTool, formatToolResultForMcp, fitResultToBridge } from "./shared/browser-tools.js";
 import { getNetworkLogSnapshot, syncNetworkAutoCapture } from "./shared/network-logs.js";
 import {
   normalizeMcpBridgeSettings,
@@ -29,6 +29,7 @@ const RECONNECT_MAX_DELAY_MS = 5000;
 const KEEPALIVE_ALARM = "margin-bridge-keepalive";
 const SERVER_PROOF_PREFIX = "margin-bridge-server:";
 const CLIENT_PROOF_PREFIX = "margin-bridge-client:";
+const LEGACY_BRIDGE_MAX_PAYLOAD_BYTES = 1024 * 1024;
 
 // Keep extension secrets inaccessible to any future content script.
 if (chrome.storage.local.setAccessLevel) {
@@ -41,6 +42,9 @@ let bridgeSocket = null;
 let bridgeRegistered = false;
 let bridgeReconnectTimer = null;
 let bridgeReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
+// Servers older than 2.3.0 enforce 1 MiB and do not advertise it, so that is
+// the safe default until a register/ok says otherwise.
+let bridgeMaxPayloadBytes = LEGACY_BRIDGE_MAX_PAYLOAD_BYTES;
 let bridgeConfig = {
   enabled: false,
   port: DEFAULT_MCP_BRIDGE_PORT,
@@ -594,6 +598,10 @@ function disconnectBridge() {
   bridgeStatus.connected = false;
 }
 
+function sendToolResult(socket, id, name, result) {
+  socket.send(fitResultToBridge({ type: "tool/result", id, result }, bridgeMaxPayloadBytes, name).json);
+}
+
 function connectBridge() {
   if (!bridgeConfig.enabled) return;
   if (bridgeSocket && (bridgeSocket.readyState === WebSocket.OPEN || bridgeSocket.readyState === WebSocket.CONNECTING)) {
@@ -656,6 +664,11 @@ function connectBridge() {
 
     if (message.type === "register/ok") {
       bridgeRegistered = true;
+      // A reconnect can land on an older copy of the server, so an unadvertised
+      // cap falls back rather than keeping the last one seen.
+      bridgeMaxPayloadBytes = Number.isFinite(message.maxPayloadBytes) && message.maxPayloadBytes > 0
+        ? message.maxPayloadBytes
+        : LEGACY_BRIDGE_MAX_PAYLOAD_BYTES;
       bridgeStatus.connected = true;
       bridgeStatus.lastError = "";
       bridgeReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
@@ -680,34 +693,22 @@ function connectBridge() {
       if (!bridgeRegistered) return;
       await toolAccessReady;
       if (!isStoredToolEnabled(message.name)) {
-        socket.send(JSON.stringify({
-          type: "tool/result",
-          id: message.id,
-          result: {
-            content: [{ type: "text", text: `Tool "${message.name}" is disabled in Margin settings.` }],
-            isError: true
-          }
-        }));
+        sendToolResult(socket, message.id, message.name, {
+          content: [{ type: "text", text: `Tool "${message.name}" is disabled in Margin settings.` }],
+          isError: true
+        });
         return;
       }
       try {
         const formatted = WEB_SEARCH_TOOL_NAMES.has(message.name)
           ? formatToolResultForMcp(await runBridgeWebSearch(message))
           : formatToolResultForMcp(await runBridgePageTool(message));
-        socket.send(JSON.stringify({
-          type: "tool/result",
-          id: message.id,
-          result: formatted
-        }));
+        sendToolResult(socket, message.id, message.name, formatted);
       } catch (err) {
-        socket.send(JSON.stringify({
-          type: "tool/result",
-          id: message.id,
-          result: {
-            content: [{ type: "text", text: err.message || String(err) }],
-            isError: true
-          }
-        }));
+        sendToolResult(socket, message.id, message.name, {
+          content: [{ type: "text", text: err.message || String(err) }],
+          isError: true
+        });
       }
     }
   };

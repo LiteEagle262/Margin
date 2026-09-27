@@ -30,7 +30,9 @@ const LIST_TOOLS_WAIT_MS = 8000;
 // Codex runs several copies of this server at once, so another instance may
 // hold the bridge port and may exit at any time; the losers keep retrying.
 const BRIDGE_RETRY_MS = 2000;
-const MAX_BRIDGE_PAYLOAD_BYTES = 1024 * 1024;
+// A PNG of a busy page on a high-DPI display is tens of MB as base64, and the
+// peer is an authenticated loopback extension, so this is not a DoS boundary.
+const MAX_BRIDGE_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MIN_AUTH_TOKEN_BYTES = 32;
 const CHROME_EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 const NONCE_PATTERN = /^[0-9a-f]{32,128}$/;
@@ -383,7 +385,7 @@ function connectMirrorUplink({ bridgeHost, bridgePort, bridgeAuthToken }) {
     safeSocketSend(socket, {
       type: "hello",
       client: "margin-mcp-mirror",
-      version: "2.2.0",
+      version: "2.3.0",
       nonce: clientNonce
     });
   });
@@ -410,7 +412,7 @@ function connectMirrorUplink({ bridgeHost, bridgePort, bridgeAuthToken }) {
         role: "mirror",
         proof: bridgeProof(bridgeAuthToken, `${CLIENT_PROOF_PREFIX}${message.nonce}`),
         client: "margin-mcp-mirror",
-        version: "2.2.0"
+        version: "2.3.0"
       });
       return;
     }
@@ -561,7 +563,7 @@ export function startBridgeServer(options = {}) {
           // place, so the extension's state is left untouched here.
           mirrors.set(socket, new Set());
           log(`Mirror copy connected (${mirrors.size} mirroring)`);
-          safeSocketSend(socket, { type: "register/ok", bridgePort: listeningPort });
+          safeSocketSend(socket, { type: "register/ok", bridgePort: listeningPort, maxPayloadBytes: MAX_BRIDGE_PAYLOAD_BYTES });
           const snapshot = featureFlagsSnapshot();
           if (snapshot) safeSocketSend(socket, snapshot);
           return;
@@ -577,7 +579,7 @@ export function startBridgeServer(options = {}) {
         const client = typeof message.client === "string" ? message.client.slice(0, 80) : "margin-extension";
         const version = typeof message.version === "string" ? message.version.slice(0, 40) : "unknown";
         log(`Extension connected (${client} ${version})`);
-        safeSocketSend(socket, { type: "register/ok", bridgePort: listeningPort });
+        safeSocketSend(socket, { type: "register/ok", bridgePort: listeningPort, maxPayloadBytes: MAX_BRIDGE_PAYLOAD_BYTES });
         return;
       }
 
@@ -724,7 +726,7 @@ export async function main() {
   const server = new Server(
     {
       name: "margin-browser",
-      version: "2.2.0"
+      version: "2.3.0"
     },
     {
       capabilities: {
