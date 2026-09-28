@@ -385,7 +385,7 @@ function connectMirrorUplink({ bridgeHost, bridgePort, bridgeAuthToken }) {
     safeSocketSend(socket, {
       type: "hello",
       client: "margin-mcp-mirror",
-      version: "2.3.0",
+      version: "2.3.1",
       nonce: clientNonce
     });
   });
@@ -412,7 +412,7 @@ function connectMirrorUplink({ bridgeHost, bridgePort, bridgeAuthToken }) {
         role: "mirror",
         proof: bridgeProof(bridgeAuthToken, `${CLIENT_PROOF_PREFIX}${message.nonce}`),
         client: "margin-mcp-mirror",
-        version: "2.3.0"
+        version: "2.3.1"
       });
       return;
     }
@@ -726,7 +726,7 @@ export async function main() {
   const server = new Server(
     {
       name: "margin-browser",
-      version: "2.3.0"
+      version: "2.3.1"
     },
     {
       capabilities: {
@@ -795,8 +795,18 @@ export async function main() {
   log("MCP server ready on stdio");
 }
 
+// npx on macOS/Linux runs the bin through the node_modules/.bin symlink, while
+// import.meta.url is always the real file, so the link has to be resolved first.
+function resolveEntrypointPath(scriptPath) {
+  try {
+    return fs.realpathSync(scriptPath);
+  } catch {
+    return path.resolve(scriptPath);
+  }
+}
+
 const isEntrypoint = Boolean(
-  process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+  process.argv[1] && import.meta.url === pathToFileURL(resolveEntrypointPath(process.argv[1])).href
 );
 
 if (isEntrypoint) {

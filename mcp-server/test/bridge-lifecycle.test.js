@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { startBridgeServer } from "../index.js";
@@ -80,4 +83,39 @@ test("the server exits when its stdio client goes away", async () => {
     new Promise((resolve) => setTimeout(() => resolve(["timeout"]), 5000))
   ]);
   assert.equal(code, 0, "stdin EOF ended the process instead of orphaning it on the port");
+});
+
+// npx on macOS/Linux launches the bin through the node_modules/.bin symlink, so
+// argv[1] is the link while import.meta.url is the real file.
+test("the server starts when launched through a symlink", { skip: process.platform === "win32" }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "margin-mcp-symlink-"));
+  const link = path.join(dir, "margin-mcp-server");
+  fs.symlinkSync(SERVER_PATH, link);
+
+  const child = spawn(process.execPath, [link], {
+    env: { ...process.env, MARGIN_MCP_HOST: "127.0.0.1", MARGIN_MCP_PORT: "9283", MARGIN_MCP_TOKEN: TOKEN },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  t.after(() => {
+    child.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  let stdout = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += String(chunk);
+  });
+
+  child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "symlink-test", version: "1.0.0" }
+    }
+  })}\n`);
+
+  await waitFor(() => stdout.includes("\"serverInfo\""), "the initialize response");
 });
