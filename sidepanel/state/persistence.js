@@ -12,6 +12,7 @@ export const SETTINGS_STORAGE_KEYS = [
   "systemPrompt",
   "mcpServers",
   "mcpBridge",
+  "loomBridge",
   "webSearch",
   "toolAccess",
   "networkCapture",

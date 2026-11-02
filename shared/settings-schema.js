@@ -9,6 +9,15 @@ export function normalizeMcpBridgeSettings(raw) {
   };
 }
 
+// Only the on/off switch is a setting. Loom's port and token come from its
+// native host at run time and are never stored or exported.
+export function normalizeLoomBridgeSettings(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  return {
+    enabled: value.enabled !== false
+  };
+}
+
 export function normalizeNetworkCaptureSettings(raw) {
   const value = raw && typeof raw === "object" ? raw : {};
   return {

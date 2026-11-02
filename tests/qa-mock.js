@@ -35,6 +35,9 @@
         if (message?.type === "mcp-bridge/get-status") {
           return { ok: true, config: { enabled: false, port: 9229, token: "" }, status: { connected: false } };
         }
+        if (message?.type === "loom-bridge/get-status") {
+          return { ok: true, enabled: true, status: { state: "missing", detail: "" } };
+        }
         if (message?.type === "openai-oauth/status") {
           return { ok: true, result: { linked: false, account: null, pending: openAIPending } };
         }

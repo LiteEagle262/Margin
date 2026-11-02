@@ -1,5 +1,6 @@
 import { ensureProviderModelsLoaded } from "./model-picker.js";
 import { syncMcpBridgeStatusPolling } from "../settings/sections/mcp-bridge.js";
+import { syncLoomBridgeStatusPolling } from "../settings/sections/loom-bridge.js";
 import { syncOpenAIAccountPolling } from "../settings/sections/openai-account.js";
 
 export function initSettingsToggle() {
@@ -41,6 +42,7 @@ export function switchView(viewName) {
     if (headerClearChatBtn) headerClearChatBtn.classList.add("hidden");
     ensureProviderModelsLoaded();
     syncMcpBridgeStatusPolling();
+    syncLoomBridgeStatusPolling();
     syncOpenAIAccountPolling();
   } else {
     if (settingsView) settingsView.classList.remove("active");
@@ -50,6 +52,7 @@ export function switchView(viewName) {
     if (headerExportChatBtn) headerExportChatBtn.classList.remove("hidden");
     if (headerClearChatBtn) headerClearChatBtn.classList.remove("hidden");
     syncMcpBridgeStatusPolling();
+    syncLoomBridgeStatusPolling();
     syncOpenAIAccountPolling();
 
     const chatHistory = document.getElementById("chat-history");
