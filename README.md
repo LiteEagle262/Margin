@@ -79,6 +79,14 @@ The extension and the server authenticate each other with an HMAC challenge-resp
 extension pushes its tool definitions at connect time, so the server exposes exactly the tools your extension
 version implements and you have enabled. See [`mcp-server/README.md`](mcp-server/README.md) for details.
 
+## Loom
+
+When Loom for Windows is installed, Margin connects to it automatically with no setup: Loom's installer
+registers a native-messaging host that hands Margin the local port and a token for Loom's bridge. Loom then
+gets the tools you have turned on under Tool Access, with the same gating as the MCP bridge. This is a
+separate connection, so the MCP bridge above keeps working alongside it. Switch it off under
+**Settings → Loom**. The Loom token is held in memory only and is never saved or exported.
+
 ## Development
 
 ```

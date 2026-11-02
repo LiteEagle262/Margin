@@ -22,6 +22,9 @@ export let settings = {
     port: 9229,
     token: ""
   },
+  loomBridge: {
+    enabled: true
+  },
   webSearch: {
     enabled: false,
     provider: "tavily",

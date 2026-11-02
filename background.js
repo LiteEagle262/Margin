@@ -2,8 +2,11 @@ import { getActiveTabId, executePageTool, formatToolResultForMcp, fitResultToBri
 import { getNetworkLogSnapshot, syncNetworkAutoCapture } from "./shared/network-logs.js";
 import {
   normalizeMcpBridgeSettings,
+  normalizeLoomBridgeSettings,
   DEFAULT_MCP_BRIDGE_PORT
 } from "./shared/settings-schema.js";
+import { createBridgeConnection, randomHex } from "./background/bridge-connection.js";
+import { askLoomHost, createLoomLink } from "./background/loom-link.js";
 import {
   cancelOpenAIDeviceAuthorization,
   getOpenAIOAuthStatus,
@@ -27,9 +30,11 @@ import { BATCH_TOOL_NAME, runBatch } from "./shared/batch-core.js";
 const RECONNECT_BASE_DELAY_MS = 750;
 const RECONNECT_MAX_DELAY_MS = 5000;
 const KEEPALIVE_ALARM = "margin-bridge-keepalive";
-const SERVER_PROOF_PREFIX = "margin-bridge-server:";
-const CLIENT_PROOF_PREFIX = "margin-bridge-client:";
-const LEGACY_BRIDGE_MAX_PAYLOAD_BYTES = 1024 * 1024;
+// Asks the Loom host again while not connected: twice in the first minute
+// after the worker starts, then every 5 minutes.
+const LOOM_RETRY_ALARM = "margin-loom-retry";
+const LOOM_EARLY_RETRY_WINDOW_MS = 60 * 1000;
+const workerStartedAt = Date.now();
 
 // Keep extension secrets inaccessible to any future content script.
 if (chrome.storage.local.setAccessLevel) {
@@ -38,23 +43,15 @@ if (chrome.storage.local.setAccessLevel) {
     .catch((error) => console.warn("Could not restrict local storage access:", error));
 }
 
-let bridgeSocket = null;
-let bridgeRegistered = false;
-let bridgeReconnectTimer = null;
-let bridgeReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
-// Servers older than 2.3.0 enforce 1 MiB and do not advertise it, so that is
-// the safe default until a register/ok says otherwise.
-let bridgeMaxPayloadBytes = LEGACY_BRIDGE_MAX_PAYLOAD_BYTES;
 let bridgeConfig = {
   enabled: false,
   port: DEFAULT_MCP_BRIDGE_PORT,
   token: ""
 };
 
-let bridgeStatus = {
-  connected: false,
-  lastError: ""
-};
+// Off until storage is read, so an alarm that wakes the worker cannot ask the
+// host for a user who switched Loom off.
+let loomConfig = { enabled: false };
 
 let toolAccessConfig = normalizeToolAccessConfig(null);
 let toolAccessReady;
@@ -73,6 +70,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
   chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+  await startLoomLink();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -81,6 +79,7 @@ chrome.runtime.onStartup.addListener(async () => {
   await loadWebSearchConfig();
   await syncNetworkAutoCaptureFromStorage();
   scheduleMcpBridgeConnection();
+  await startLoomLink();
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -88,6 +87,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.mcpBridge) {
     bridgeConfig = normalizeMcpBridgeSettings(changes.mcpBridge.newValue);
     scheduleMcpBridgeConnection(true);
+  }
+  if (changes.loomBridge) {
+    loomConfig = normalizeLoomBridgeSettings(changes.loomBridge.newValue);
+    applyLoomConfig();
   }
   if (changes.toolAccess) {
     toolAccessConfig = normalizeToolAccessConfig(changes.toolAccess.newValue);
@@ -103,10 +106,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== KEEPALIVE_ALARM) return;
-  if (bridgeConfig.enabled && !bridgeReconnectTimer && (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN)) {
-    scheduleMcpBridgeConnection();
+  if (alarm.name === LOOM_RETRY_ALARM) {
+    if (loomConfig.enabled) {
+      scheduleLoomRetry();
+      loomLink.check();
+    }
+    return;
   }
+  if (alarm.name !== KEEPALIVE_ALARM) return;
+  manualBridge.ensureConnected();
   pollOpenAIDeviceAuthorization().catch(() => {});
 });
 
@@ -213,8 +221,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         port: bridgeConfig.port,
         token: bridgeConfig.token
       },
-      status: bridgeStatus
+      status: manualBridge.status
     });
+    return false;
+  }
+
+  // The Loom token never leaves the background, so it is not in this reply.
+  if (message?.type === "loom-bridge/get-status") {
+    sendResponse({ ok: true, enabled: loomConfig.enabled, status: loomLink.getStatus() });
     return false;
   }
 
@@ -337,7 +351,7 @@ function recordToolJournalEntry({ surface, tool, args, outcome }) {
     const stored = await chrome.storage.local.get(["toolJournal"]);
     await chrome.storage.local.set({ toolJournal: appendJournalEntry(stored.toolJournal, entry) });
   }).catch(() => {});
-  if (surface === "bridge") {
+  if (surface !== "panel") {
     bridgeBadgeCount += 1;
     updateBridgeBadge();
   }
@@ -402,39 +416,15 @@ function ensureMcpBridgeDefaults(forceNewToken = false) {
   return mcpBridgeDefaultsPromise;
 }
 
-function randomHex(byteLength) {
-  const bytes = new Uint8Array(byteLength);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function bridgeProof(token, payload) {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(token),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
-  return Array.from(new Uint8Array(signature), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function bridgeProofsMatch(expected, provided) {
-  if (typeof expected !== "string" || typeof provided !== "string") return false;
-  if (expected.length !== provided.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < expected.length; i += 1) {
-    mismatch |= expected.charCodeAt(i) ^ provided.charCodeAt(i);
-  }
-  return mismatch === 0;
-}
-
 async function loadMcpBridgeConfig() {
   await ensureMcpBridgeDefaults(false);
   const stored = await chrome.storage.local.get(["mcpBridge"]);
   bridgeConfig = normalizeMcpBridgeSettings(stored.mcpBridge);
+}
+
+async function loadLoomBridgeConfig() {
+  const stored = await chrome.storage.local.get(["loomBridge"]);
+  loomConfig = normalizeLoomBridgeSettings(stored.loomBridge);
 }
 
 function normalizeToolAccessConfig(raw) {
@@ -484,22 +474,21 @@ function buildBridgeToolSchemas() {
     .map(toMcpToolSchema);
 }
 
+function buildBridgeFeatureFlags() {
+  return {
+    tools: buildBridgeToolSchemas(),
+    toolAccess: toolAccessConfig,
+    // Only advertise availability. The Tavily key stays in the extension,
+    // which runs the search when an MCP client calls the tool.
+    webSearch: {
+      enabled: isWebSearchAvailable(webSearchConfig)
+    }
+  };
+}
+
 function sendFeatureFlagsToBridge() {
-  if (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN) return;
-  try {
-    bridgeSocket.send(JSON.stringify({
-      type: "feature-flags/set",
-      flags: {
-        tools: buildBridgeToolSchemas(),
-        toolAccess: toolAccessConfig,
-        // Only advertise availability. The Tavily key stays in the extension,
-        // which runs the search when an MCP client calls the tool.
-        webSearch: {
-          enabled: isWebSearchAvailable(webSearchConfig)
-        }
-      }
-    }));
-  } catch (e) {}
+  manualBridge.sendFeatureFlags();
+  loomLink.sendFeatureFlags();
 }
 
 // Every tool the bridge advertises (MCP_PROXIED_TOOLS = BROWSER_TOOLS +
@@ -516,7 +505,7 @@ function isBatchActionEnabled(tool) {
 
 // The bridge has no agent run, so the in-chat tool budget and loop guards do
 // not apply here — only the per-action access gate does.
-function runBridgeBatch(args) {
+function runBridgeBatch(args, surface) {
   return runBatch(args, {
     // Each action is journaled individually. Calling executePageTool here skips
     // the "page-tool" message handler that normally records them, and a lone
@@ -524,10 +513,10 @@ function runBridgeBatch(args) {
     runTool: async (tool, toolArgs) => {
       try {
         const result = await executePageTool(tool, toolArgs);
-        recordToolJournalEntry({ surface: "bridge", tool, args: toolArgs, outcome: journalOutcome(result) });
+        recordToolJournalEntry({ surface, tool, args: toolArgs, outcome: journalOutcome(result) });
         return result;
       } catch (err) {
-        recordToolJournalEntry({ surface: "bridge", tool, args: toolArgs, outcome: "error" });
+        recordToolJournalEntry({ surface, tool, args: toolArgs, outcome: "error" });
         throw err;
       }
     },
@@ -535,207 +524,103 @@ function runBridgeBatch(args) {
   });
 }
 
-async function runBridgePageTool(message) {
+async function runBridgePageTool(message, surface) {
   const args = message.arguments || {};
   try {
     const result = message.name === BATCH_TOOL_NAME
-      ? await runBridgeBatch(args)
+      ? await runBridgeBatch(args, surface)
       : await executePageTool(message.name, args);
-    recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: journalOutcome(result) });
+    recordToolJournalEntry({ surface, tool: message.name, args, outcome: journalOutcome(result) });
     return result;
   } catch (err) {
-    recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: "error" });
+    recordToolJournalEntry({ surface, tool: message.name, args, outcome: "error" });
     throw err;
   }
 }
 
 // Bridge web searches run entirely in the background, so this is the only
 // place they can be journaled — they never reach executePageTool.
-async function runBridgeWebSearch(message) {
+async function runBridgeWebSearch(message, surface) {
   const args = message.arguments || {};
   try {
     const result = await executeWebSearchTool(message.name, args, webSearchConfig);
-    recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: journalOutcome(result) });
+    recordToolJournalEntry({ surface, tool: message.name, args, outcome: journalOutcome(result) });
     return result;
   } catch (err) {
-    recordToolJournalEntry({ surface: "bridge", tool: message.name, args, outcome: "error" });
+    recordToolJournalEntry({ surface, tool: message.name, args, outcome: "error" });
     throw err;
   }
 }
 
-function scheduleMcpBridgeConnection(force = false) {
-  if (bridgeReconnectTimer) {
-    clearTimeout(bridgeReconnectTimer);
-    bridgeReconnectTimer = null;
+// Both bridges run calls through here, so Tool Access gates them the same way.
+async function handleBridgeToolCall(message, surface) {
+  await toolAccessReady;
+  if (!isStoredToolEnabled(message.name)) {
+    return {
+      content: [{ type: "text", text: `Tool "${message.name}" is disabled in Margin settings.` }],
+      isError: true
+    };
   }
-
-  if (force) {
-    disconnectBridge();
-  }
-
-  if (!bridgeConfig.enabled) {
-    disconnectBridge();
-    bridgeStatus.connected = false;
-    bridgeStatus.lastError = "";
-    return;
-  }
-
-  connectBridge();
-}
-
-function disconnectBridge() {
-  if (bridgeSocket) {
-    bridgeSocket.onopen = null;
-    bridgeSocket.onclose = null;
-    bridgeSocket.onerror = null;
-    bridgeSocket.onmessage = null;
-    try {
-      bridgeSocket.close();
-    } catch {}
-    bridgeSocket = null;
-  }
-  bridgeRegistered = false;
-  bridgeStatus.connected = false;
-}
-
-function sendToolResult(socket, id, name, result) {
-  socket.send(fitResultToBridge({ type: "tool/result", id, result }, bridgeMaxPayloadBytes, name).json);
-}
-
-function connectBridge() {
-  if (!bridgeConfig.enabled) return;
-  if (bridgeSocket && (bridgeSocket.readyState === WebSocket.OPEN || bridgeSocket.readyState === WebSocket.CONNECTING)) {
-    return;
-  }
-
-  const url = `ws://127.0.0.1:${bridgeConfig.port}`;
-  let socket;
-
   try {
-    socket = new WebSocket(url);
+    return WEB_SEARCH_TOOL_NAMES.has(message.name)
+      ? formatToolResultForMcp(await runBridgeWebSearch(message, surface))
+      : formatToolResultForMcp(await runBridgePageTool(message, surface));
   } catch (err) {
-    bridgeStatus.lastError = err.message;
-    queueReconnect();
-    return;
+    return {
+      content: [{ type: "text", text: err.message || String(err) }],
+      isError: true
+    };
   }
-
-  bridgeSocket = socket;
-  bridgeRegistered = false;
-  const clientNonce = randomHex(32);
-
-  socket.onopen = () => {
-    socket.send(JSON.stringify({
-      type: "hello",
-      client: "margin-extension",
-      version: chrome.runtime.getManifest().version,
-      nonce: clientNonce
-    }));
-  };
-
-  socket.onmessage = async (event) => {
-    let message;
-    try {
-      message = JSON.parse(String(event.data));
-    } catch {
-      return;
-    }
-
-    if (message.type === "hello/proof") {
-      const token = bridgeConfig.token || "";
-      const [expectedServerProof, clientProof] = await Promise.all([
-        bridgeProof(token, `${SERVER_PROOF_PREFIX}${clientNonce}`),
-        bridgeProof(token, `${CLIENT_PROOF_PREFIX}${String(message.nonce || "")}`)
-      ]);
-      if (bridgeSocket !== socket) return;
-      if (!bridgeProofsMatch(expectedServerProof, message.proof)) {
-        bridgeStatus.lastError = "Bridge server failed authentication";
-        disconnectBridge();
-        queueReconnect();
-        return;
-      }
-      socket.send(JSON.stringify({
-        type: "register",
-        proof: clientProof,
-        client: "margin-extension",
-        version: chrome.runtime.getManifest().version
-      }));
-      return;
-    }
-
-    if (message.type === "register/ok") {
-      bridgeRegistered = true;
-      // A reconnect can land on an older copy of the server, so an unadvertised
-      // cap falls back rather than keeping the last one seen.
-      bridgeMaxPayloadBytes = Number.isFinite(message.maxPayloadBytes) && message.maxPayloadBytes > 0
-        ? message.maxPayloadBytes
-        : LEGACY_BRIDGE_MAX_PAYLOAD_BYTES;
-      bridgeStatus.connected = true;
-      bridgeStatus.lastError = "";
-      bridgeReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
-      sendFeatureFlagsToBridge();
-      return;
-    }
-
-    if (message.type === "register/error") {
-      bridgeStatus.connected = false;
-      bridgeStatus.lastError = message.error || "Registration failed";
-      disconnectBridge();
-      queueReconnect();
-      return;
-    }
-
-    if (message.type === "ping") {
-      socket.send(JSON.stringify({ type: "pong" }));
-      return;
-    }
-
-    if (message.type === "tool/call" && message.id && message.name) {
-      if (!bridgeRegistered) return;
-      await toolAccessReady;
-      if (!isStoredToolEnabled(message.name)) {
-        sendToolResult(socket, message.id, message.name, {
-          content: [{ type: "text", text: `Tool "${message.name}" is disabled in Margin settings.` }],
-          isError: true
-        });
-        return;
-      }
-      try {
-        const formatted = WEB_SEARCH_TOOL_NAMES.has(message.name)
-          ? formatToolResultForMcp(await runBridgeWebSearch(message))
-          : formatToolResultForMcp(await runBridgePageTool(message));
-        sendToolResult(socket, message.id, message.name, formatted);
-      } catch (err) {
-        sendToolResult(socket, message.id, message.name, {
-          content: [{ type: "text", text: err.message || String(err) }],
-          isError: true
-        });
-      }
-    }
-  };
-
-  socket.onclose = () => {
-    if (bridgeSocket === socket) {
-      bridgeSocket = null;
-    }
-    bridgeStatus.connected = false;
-    if (bridgeConfig.enabled) {
-      queueReconnect();
-    }
-  };
-
-  socket.onerror = () => {
-    bridgeStatus.lastError = "WebSocket connection failed";
-  };
 }
 
-function queueReconnect() {
-  if (!bridgeConfig.enabled || bridgeReconnectTimer) return;
-  const delay = bridgeReconnectDelayMs;
-  bridgeReconnectDelayMs = Math.min(bridgeReconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
-  bridgeReconnectTimer = setTimeout(() => {
-    bridgeReconnectTimer = null;
-    connectBridge();
-  }, delay);
+const bridgeConnectionOptions = {
+  buildFeatureFlags: buildBridgeFeatureFlags,
+  fitResult: fitResultToBridge,
+  getVersion: () => chrome.runtime.getManifest().version
+};
+
+// The user's own MCP bridge (Claude Code, Cursor, ...), set up in Settings.
+const manualBridge = createBridgeConnection({
+  ...bridgeConnectionOptions,
+  getTarget: () => bridgeConfig,
+  handleToolCall: (message) => handleBridgeToolCall(message, "bridge"),
+  baseDelayMs: RECONNECT_BASE_DELAY_MS,
+  maxDelayMs: RECONNECT_MAX_DELAY_MS
+});
+
+// Loom for Windows. Its port and token come only from the native host.
+const loomLink = createLoomLink({
+  askHost: () => askLoomHost(chrome.runtime),
+  isEnabled: () => loomConfig.enabled,
+  connectionOptions: {
+    ...bridgeConnectionOptions,
+    handleToolCall: (message) => handleBridgeToolCall(message, "loom")
+  },
+  log: (text) => console.debug(`Margin: ${text}`)
+});
+
+function scheduleMcpBridgeConnection(force = false) {
+  manualBridge.schedule(force);
+}
+
+function scheduleLoomRetry() {
+  const early = Date.now() - workerStartedAt < LOOM_EARLY_RETRY_WINDOW_MS;
+  chrome.alarms.create(LOOM_RETRY_ALARM, { delayInMinutes: early ? 0.5 : 5 });
+}
+
+function applyLoomConfig() {
+  if (!loomConfig.enabled) {
+    chrome.alarms.clear(LOOM_RETRY_ALARM).catch(() => {});
+    loomLink.stop();
+    return;
+  }
+  scheduleLoomRetry();
+  loomLink.check();
+}
+
+async function startLoomLink() {
+  await loadLoomBridgeConfig();
+  applyLoomConfig();
 }
 
 loadMcpBridgeConfig().then(() => {
@@ -746,3 +631,4 @@ loadMcpBridgeConfig().then(() => {
 loadToolAccessConfig();
 loadWebSearchConfig();
 syncNetworkAutoCaptureFromStorage();
+startLoomLink();

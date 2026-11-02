@@ -1,5 +1,6 @@
 import { mcpServersSection } from "./sections/mcp-servers.js";
 import { mcpBridgeSection } from "./sections/mcp-bridge.js";
+import { loomBridgeSection } from "./sections/loom-bridge.js";
 import { openAIAccountSection } from "./sections/openai-account.js";
 import { webSearchSection } from "./sections/web-search.js";
 import { toolAccessSection } from "./sections/tool-access.js";
@@ -15,6 +16,7 @@ export const SETTINGS_SECTIONS = [
   openAIAccountSection,
   mcpServersSection,
   mcpBridgeSection,
+  loomBridgeSection,
   webSearchSection,
   toolAccessSection,
   networkCaptureSection,

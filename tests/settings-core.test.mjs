@@ -14,6 +14,7 @@ import {
   syncReasoningForActiveModel,
 } from "../sidepanel/settings/sections/reasoning.js";
 import { settings, setOpenRouterModels, setSettings } from "../sidepanel/state/store.js";
+import { describeLoomStatus } from "../sidepanel/settings/sections/loom-bridge.js";
 
 test("OpenRouter reasoning metadata preserves exact effort and mandatory rules", () => {
   assert.deepEqual(normalizeOpenRouterReasoning({
@@ -235,6 +236,43 @@ test("config export removes credentials, URL secrets, and authenticator seeds", 
   assert.equal(exported.webSearch.apiKey, "");
   assert.deepEqual(exported.authManualKeys, {});
   assert.equal(exported.mcpServers[0].url, "https://example.com/mcp");
+});
+
+test("the Loom switch defaults on and is the only Loom setting kept", () => {
+  assert.deepEqual(normalizeAppConfig({}).loomBridge, { enabled: true });
+  assert.deepEqual(normalizeAppConfig({ loomBridge: { enabled: false } }).loomBridge, { enabled: false });
+  assert.deepEqual(normalizeAppConfig({ loomBridge: "on" }).loomBridge, { enabled: true });
+  assert.deepEqual(buildSettingsStorageObject(normalizeAppConfig({})).loomBridge, { enabled: true });
+});
+
+test("config export and import carry the Loom switch but never a Loom token or port", () => {
+  const config = normalizeAppConfig({
+    loomBridge: { enabled: false, token: "loom-secret", port: 40123 },
+  });
+  assert.deepEqual(config.loomBridge, { enabled: false });
+
+  const exported = buildRedactedSettingsExport(config);
+  assert.deepEqual(exported.loomBridge, { enabled: false });
+  assert.equal(JSON.stringify(exported).includes("loom-secret"), false);
+
+  // A hand-edited import file cannot plant a token or port either.
+  const imported = normalizeAppConfig({
+    ...JSON.parse(JSON.stringify(exported)),
+    loomBridge: { enabled: true, token: "planted", port: 9 },
+  });
+  assert.deepEqual(imported.loomBridge, { enabled: true });
+});
+
+test("Loom status text covers each state", () => {
+  assert.deepEqual(describeLoomStatus({ enabled: false, status: { state: "connected" } })[1], "Off");
+  assert.equal(describeLoomStatus({ enabled: true, status: { state: "connected" } })[1], "Connected to Loom");
+  assert.equal(describeLoomStatus({ enabled: true, status: { state: "missing" } })[1], "Loom not found on this computer");
+  assert.equal(
+    describeLoomStatus({ enabled: true, status: { state: "not-running", detail: "Loom is not linked" } })[1],
+    "Loom isn't running: Loom is not linked",
+  );
+  assert.equal(describeLoomStatus({ enabled: true, status: { state: "not-running", detail: "" } })[1], "Loom isn't running");
+  assert.equal(describeLoomStatus({ enabled: true, status: { state: "off" } })[1], "Off");
 });
 
 test("settings autosave persists the selected provider without a submit action", async () => {

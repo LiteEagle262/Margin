@@ -11,7 +11,8 @@
     "scripting",
     "debugger",
     "alarms",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "nativeMessaging"
   ],
   "optional_permissions": ["cookies", "downloads"],
   "host_permissions": ["<all_urls>"],
